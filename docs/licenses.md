@@ -22,6 +22,24 @@ Slint のロイヤリティフリーライセンス（デスクトップ向け�
 
 有効にした Slint の feature: `std`、`backend-default`、`renderer-femtovg`、`renderer-software`、`accessibility`、`compat-1-18`。`system-tray` は無効です。
 
+## 開発用スキル（バイナリにはリンクしない）
+
+UI の設計メモとして、次のスキル一式を `.cursor/skills/` に同梱した。実行ファイルには含めない。取り込み時に各リポジトリの `LICENSE` を読み、下の SHA の内容と一致することを確認した。`vercel-labs/agent-skills` はライセンスファイルが無いため入れていない。
+
+| スキル | 入手元 | コミット | ライセンスファイル |
+| --- | --- | --- | --- |
+| impeccable | https://github.com/pbakaus/impeccable （`.cursor/skills/impeccable/`） | `b49177d32788f2dc585c42831d845dacf1ebed2c` | Apache-2.0（`LICENSE` と `NOTICE.md`） |
+| taste-skill | https://github.com/Leonxlnx/taste-skill （`skills/taste-skill/`） | `f6b76575f949707b4e3c37cd86cb44b0b98643e8` | MIT |
+| emil-design-eng | https://github.com/emilkowalski/skills （`skills/emil-design-eng/`） | `64eb3deb9a5fbfa041faf783e0bc3fd635872e9c` | MIT |
+
+Apache-2.0 と MIT は GPL-3.0 と組み合わせられる。taste-skill のフォルダには、その説明文が Wikimedia Commons / Unsplash の CC0・CC-BY・CC-BY-SA としている参考写真が含まれる。PULSE の画面には使っていない。
+
+## アイコン
+
+左ナビとハンバーガーの図形は、画像ファイルやアイコンフォントを使わず、`ui/app.slint` の `SideGlyph` に矩形で描いている。このリポジトリのソースの一部なので、ライセンスは GPL-3.0-only です。
+
+Microsoft の Fluent System Icons、Segoe MDL2 Assets、Segoe Fluent Icons からのコピーやトレースは含みません。サードパーティのアイコンセットも依存に入れていません。
+
 ## 間接依存
 
 `cargo metadata --format-version 1` で、このロックファイルから到達できるパッケージを確認しました（ホストが Linux のため、Windows 専用の任意依存は CI のロック解決と差が出ることがあります。直接依存のライセンスは同じです）。

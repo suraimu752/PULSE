@@ -14,6 +14,7 @@ mod platform;
 mod present;
 mod sampler;
 mod sort;
+pub mod theme;
 
 #[cfg(feature = "ui")]
 mod ui;

@@ -1,4 +1,48 @@
-import { ListView, ScrollView } from "std-widgets.slint";
+import { ListView } from "std-widgets.slint";
+
+// Surfaces are layered (sidebar, canvas, card), not inverted. Accent is for
+// selection, the active sort, and measured values only.
+export global Theme {
+    // 0 light, 1 dark, 2 follow AppsUseLightTheme.
+    in-out property <int> preference: 2;
+    in-out property <bool> system-light: true;
+    out property <bool> dark: preference == 1 ? true : preference == 0 ? false : !system-light;
+
+    out property <color> canvas: dark ? #1e1e1e : #f3f3f3;
+    out property <color> sidebar: dark ? #181818 : #f7f7f7;
+    out property <color> card: dark ? #2a2a2a : #ffffff;
+    out property <color> header: dark ? #333333 : #f6f6f6;
+    out property <color> header-hover: dark ? #3d3d3d : #ececec;
+    out property <color> row: dark ? #2a2a2a : #ffffff;
+    out property <color> row-alt: dark ? #242424 : #f3f6f9;
+    out property <color> line: dark ? #454545 : #e1e1e1;
+    out property <color> text: dark ? #f3f3f3 : #1a1a1a;
+    out property <color> text-secondary: dark ? #d4d4d4 : #3a3a3a;
+    out property <color> text-muted: dark ? #b8b8b8 : #4f4f4f;
+    out property <color> accent: dark ? #6cbcf5 : #0f6cbd;
+    out property <color> accent-text: dark ? #9ed4ff : #0c4f8c;
+    out property <color> nav-selected: dark ? #12344d : #e5f1fb;
+    out property <color> nav-hover: dark ? #2c2c2c : #ededed;
+    out property <color> nav-pressed: dark ? #3a3a3a : #e2e2e2;
+    out property <color> card-hover: dark ? #323232 : #f5f5f5;
+    out property <color> card-pressed: dark ? #3a3a3a : #e8e8e8;
+    out property <color> unavailable: dark ? #f0c36a : #8a4e00;
+    out property <color> unsupported: dark ? #b0b0b0 : #5a5a5a;
+    out property <color> warn-bg: dark ? #3a3116 : #fff4ce;
+    out property <color> warn-border: dark ? #8d7340 : #e6c200;
+    out property <color> warn-text: dark ? #f6e7c1 : #5c4a00;
+    out property <color> graph-bg: dark ? #1a242e : #f3f7fb;
+    out property <color> graph-plot: dark ? #12181f : #ffffff;
+    out property <color> graph-border: dark ? #314556 : #d5e3f0;
+    out property <color> graph-bar: dark ? #4aa3e0 : #0f6cbd;
+    // Dark track sits clearly above the card so the gutter reads when the thumb is hidden.
+    out property <color> scroll-track: dark ? #404040 : #e4e4e4;
+    out property <color> scroll-thumb: dark ? #c0c0c0 : #5c5c5c;
+    out property <color> scroll-thumb-hover: dark ? #d4d4d4 : #3f3f3f;
+    out property <color> scroll-thumb-pressed: dark ? #e4e4e4 : #2a2a2a;
+    out property <color> grip: dark ? #6a6a6a : #c4c4c4;
+    out property <color> chip: dark ? #2e2e2e : #ffffff;
+}
 
 export enum CellKind { value, zero, unavailable, unsupported }
 
@@ -26,39 +70,261 @@ export struct ProcessRow {
 }
 
 global Columns {
-    out property <length> name: 220px;
-    out property <length> pid: 72px;
-    out property <length> cpu: 80px;
-    out property <length> memory: 104px;
-    out property <length> disk: 168px;
-    out property <length> network: 176px;
-    out property <length> gpu3d: 88px;
-    out property <length> gpu-encode: 112px;
-    out property <length> gpu-decode: 112px;
-    out property <length> vram: 112px;
-    out property <length> shared: 128px;
-    out property <length> table: 1372px;
+    in-out property <length> name: 220px;
+    in-out property <length> pid: 72px;
+    in-out property <length> cpu: 80px;
+    in-out property <length> memory: 104px;
+    in-out property <length> disk: 168px;
+    in-out property <length> network: 176px;
+    in-out property <length> gpu3d: 88px;
+    in-out property <length> gpu-encode: 112px;
+    in-out property <length> gpu-decode: 112px;
+    in-out property <length> vram: 112px;
+    in-out property <length> shared: 128px;
+    // Live sum, so horizontal scrolling follows a user resize.
+    out property <length> table: name + pid + cpu + memory + disk + network + gpu3d + gpu-encode + gpu-decode + vram + shared;
 }
 
-component HeaderCell inherits TouchArea {
+// Original mark drawn in this file. Not a Microsoft icon asset.
+component SideGlyph inherits Rectangle {
+    in property <int> glyph: 0;
+    in property <color> tint: Theme.text;
+    width: 18px;
+    height: 18px;
+
+    if root.glyph == 0: Rectangle {
+        x: 1px;
+        y: 4px;
+        width: 16px;
+        height: 1.6px;
+        border-radius: 1px;
+        background: root.tint;
+    }
+    if root.glyph == 0: Rectangle {
+        x: 1px;
+        y: 8.2px;
+        width: 16px;
+        height: 1.6px;
+        border-radius: 1px;
+        background: root.tint;
+    }
+    if root.glyph == 0: Rectangle {
+        x: 1px;
+        y: 12.4px;
+        width: 16px;
+        height: 1.6px;
+        border-radius: 1px;
+        background: root.tint;
+    }
+
+    if root.glyph == 1: Rectangle { x: 1px; y: 3px; width: 3px; height: 3px; border-radius: 1px; background: root.tint; }
+    if root.glyph == 1: Rectangle { x: 6px; y: 3.5px; width: 11px; height: 2px; border-radius: 1px; background: root.tint; }
+    if root.glyph == 1: Rectangle { x: 1px; y: 8px; width: 3px; height: 3px; border-radius: 1px; background: root.tint; }
+    if root.glyph == 1: Rectangle { x: 6px; y: 8.5px; width: 11px; height: 2px; border-radius: 1px; background: root.tint; }
+    if root.glyph == 1: Rectangle { x: 1px; y: 13px; width: 3px; height: 3px; border-radius: 1px; background: root.tint; }
+    if root.glyph == 1: Rectangle { x: 6px; y: 13.5px; width: 11px; height: 2px; border-radius: 1px; background: root.tint; }
+
+    if root.glyph == 2: Rectangle { x: 2px; y: 10px; width: 3px; height: 6px; border-radius: 1px; background: root.tint; }
+    if root.glyph == 2: Rectangle { x: 7.5px; y: 6px; width: 3px; height: 10px; border-radius: 1px; background: root.tint; }
+    if root.glyph == 2: Rectangle { x: 13px; y: 2px; width: 3px; height: 14px; border-radius: 1px; background: root.tint; }
+
+    if root.glyph == 3: Rectangle {
+        x: 1px;
+        y: 1px;
+        width: 16px;
+        height: 16px;
+        border-radius: 8px;
+        border-width: 1.6px;
+        border-color: root.tint;
+        background: transparent;
+    }
+    if root.glyph == 3: Rectangle { x: 8.2px; y: 4px; width: 1.6px; height: 5px; background: root.tint; }
+    if root.glyph == 3: Rectangle { x: 8.2px; y: 8px; width: 5px; height: 1.6px; background: root.tint; }
+
+    if root.glyph == 4: Rectangle { x: 8px; y: 1px; width: 2px; height: 2px; background: root.tint; }
+    if root.glyph == 4: Rectangle { x: 7px; y: 3px; width: 4px; height: 2px; background: root.tint; }
+    if root.glyph == 4: Rectangle { x: 6px; y: 5px; width: 6px; height: 2px; background: root.tint; }
+    if root.glyph == 4: Rectangle { x: 8px; y: 7px; width: 2px; height: 9px; background: root.tint; }
+
+    if root.glyph == 5: Rectangle { x: 5px; y: 1px; width: 8px; height: 8px; border-radius: 4px; background: root.tint; }
+    if root.glyph == 5: Rectangle { x: 2px; y: 11px; width: 14px; height: 6px; border-radius: 3px; background: root.tint; }
+
+    if root.glyph == 6: Rectangle { x: 1px; y: 3px; width: 16px; height: 2px; border-radius: 1px; background: root.tint; }
+    if root.glyph == 6: Rectangle { x: 1px; y: 8px; width: 11px; height: 2px; border-radius: 1px; background: root.tint; }
+    if root.glyph == 6: Rectangle { x: 1px; y: 13px; width: 14px; height: 2px; border-radius: 1px; background: root.tint; }
+
+    if root.glyph == 7: Rectangle {
+        x: 5px;
+        y: 5px;
+        width: 8px;
+        height: 8px;
+        border-radius: 4px;
+        border-width: 1.6px;
+        border-color: root.tint;
+        background: transparent;
+    }
+    if root.glyph == 7: Rectangle { x: 7.5px; y: 1px; width: 3px; height: 3.2px; background: root.tint; }
+    if root.glyph == 7: Rectangle { x: 7.5px; y: 13.8px; width: 3px; height: 3.2px; background: root.tint; }
+    if root.glyph == 7: Rectangle { x: 1px; y: 7.5px; width: 3.2px; height: 3px; background: root.tint; }
+    if root.glyph == 7: Rectangle { x: 13.8px; y: 7.5px; width: 3.2px; height: 3px; background: root.tint; }
+}
+
+component HeaderCell inherits Rectangle {
     in property <string> label;
     in property <length> col-width;
+    in property <length> min-col: 64px;
     in property <bool> active;
     in property <bool> descending;
     in property <bool> numeric;
+    callback resized(length);
+    callback sort-clicked();
+    callback wheel-scrolled(length, length);
+
     width: col-width;
+    preferred-width: col-width;
+    horizontal-stretch: 0;
     height: 34px;
+    background: sort-area.has-hover && !grip.has-hover ? Theme.header-hover : transparent;
     property <string> mark: active ? (descending ? " ▼" : " ▲") : "";
-    Text {
-        x: numeric ? 0px : 8px;
-        width: parent.width - 8px;
+    property <length> press-width: col-width;
+    property <length> press-abs: 0px;
+
+    function on-wheel(event: PointerScrollEvent) {
+        if (event.modifiers.shift) {
+            root.wheel-scrolled(event.delta-y, event.delta-x);
+        } else {
+            root.wheel-scrolled(event.delta-x, event.delta-y);
+        }
+    }
+
+    sort-area := TouchArea {
+        width: parent.width - 12px;
         height: 100%;
-        text: label + mark;
-        font-size: 12px;
-        font-weight: 600;
-        color: root.active ? #0f6cbd : #3d3d3d;
-        horizontal-alignment: numeric ? right : left;
-        vertical-alignment: center;
+        clicked => { root.sort-clicked(); }
+        scroll-event(event) => {
+            root.on-wheel(event);
+            accept
+        }
+        Text {
+            x: numeric ? 0px : 8px;
+            width: parent.width - 8px;
+            height: 100%;
+            text: label + mark;
+            font-size: 12px;
+            font-weight: 600;
+            color: root.active ? Theme.accent-text : Theme.text-secondary;
+            horizontal-alignment: numeric ? right : left;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+
+    grip := TouchArea {
+        x: parent.width - 12px;
+        width: 12px;
+        height: 100%;
+        mouse-cursor: ew-resize;
+        scroll-event(event) => {
+            root.on-wheel(event);
+            accept
+        }
+        pointer-event(event) => {
+            if (event.kind == PointerEventKind.down && event.button == PointerEventButton.left) {
+                root.press-width = root.col-width;
+                root.press-abs = self.absolute-position.x + self.mouse-x;
+            }
+        }
+        moved => {
+            if (self.pressed) {
+                root.resized(max(root.min-col, root.press-width + (self.absolute-position.x + self.mouse-x) - root.press-abs));
+            }
+        }
+        Rectangle {
+            x: parent.width - self.width;
+            width: grip.has-hover || grip.pressed ? 2px : 1px;
+            height: 100%;
+            background: grip.has-hover || grip.pressed ? Theme.accent : Theme.grip;
+        }
+    }
+}
+
+// Windows 11-like overlay bar: a visible thumb, a draggable track, and wheel events.
+component WinScrollBar inherits Rectangle {
+    in property <bool> horizontal: false;
+    in property <length> maximum: 0px;
+    in property <length> page-size: 0px;
+    in-out property <length> value: 0px;
+
+    property <bool> overflow: maximum > 1px;
+    property <length> track: horizontal ? self.width : self.height;
+    property <length> thumb-len: !overflow ? 0px : max(28px, min(track - 4px, track * (page-size / max(1px, page-size + maximum))));
+    property <length> travel: max(0px, track - thumb-len);
+    property <length> thumb-pos: !overflow || maximum <= 0px ? 0px : travel * min(maximum, max(0px, -value)) / maximum;
+    property <color> thumb-color: ta.pressed ? Theme.scroll-thumb-pressed : ta.has-hover ? Theme.scroll-thumb-hover : Theme.scroll-thumb;
+    property <length> grab-value: 0px;
+    property <length> grab-pos: 0px;
+
+    background: Theme.scroll-track;
+
+    thumb := Rectangle {
+        visible: root.overflow;
+        x: root.horizontal ? root.thumb-pos + 2px : 3px;
+        y: root.horizontal ? 3px : root.thumb-pos + 2px;
+        width: root.horizontal ? max(0px, root.thumb-len - 4px) : 8px;
+        height: root.horizontal ? 8px : max(0px, root.thumb-len - 4px);
+        border-radius: 4px;
+        background: root.thumb-color;
+    }
+
+    ta := TouchArea {
+        pointer-event(event) => {
+            if (event.kind == PointerEventKind.down && event.button == PointerEventButton.left && root.overflow) {
+                root.grab-value = -root.value;
+                root.grab-pos = root.horizontal ? self.mouse-x : self.mouse-y;
+            }
+        }
+        moved => {
+            if (self.pressed && root.overflow && root.travel > 1px) {
+                root.value = -max(0px, min(root.maximum, root.grab-value + ((root.horizontal ? self.mouse-x : self.mouse-y) - root.grab-pos) * (root.maximum / root.travel)));
+            }
+        }
+        scroll-event(event) => {
+            if (root.horizontal && (event.modifiers.shift ? event.delta-y : event.delta-x) != 0) {
+                root.value = max(-root.maximum, min(0px, root.value + (event.modifiers.shift ? event.delta-y : event.delta-x)));
+                return accept;
+            }
+            if (!root.horizontal && (event.modifiers.shift ? event.delta-x : event.delta-y) != 0) {
+                root.value = max(-root.maximum, min(0px, root.value + (event.modifiers.shift ? event.delta-x : event.delta-y)));
+                return accept;
+            }
+            reject
+        }
+    }
+}
+
+// Vertical scroller with a visible bar. The inner layout keeps its own height
+// so a short viewport can scroll without instantiating extra copies of the content.
+component VScroll inherits Rectangle {
+    property <length> gutter: 14px;
+
+    flick := Flickable {
+        x: 0px;
+        y: 0px;
+        width: parent.width - root.gutter;
+        height: parent.height;
+        mouse-drag-pan-enabled: false;
+        @children
+    }
+
+    WinScrollBar {
+        horizontal: false;
+        x: parent.width - self.width;
+        y: 0px;
+        width: root.gutter;
+        height: parent.height;
+        maximum: max(0px, flick.content-height - flick.height);
+        page-size: flick.height;
+        value <=> flick.content-y;
     }
 }
 
@@ -68,7 +334,7 @@ component ValueCell inherits Rectangle {
     in property <length> col-width;
     width: col-width;
     height: 100%;
-    property <color> fg: kind == CellKind.unsupported ? #6e6e6e : kind == CellKind.unavailable ? #8a5a00 : #1b1b1b;
+    property <color> fg: kind == CellKind.unsupported ? Theme.unsupported : kind == CellKind.unavailable ? Theme.unavailable : Theme.text;
     Text {
         x: 0px;
         width: parent.width - 8px;
@@ -86,7 +352,7 @@ component ProcessLine inherits Rectangle {
     in property <ProcessRow> entry;
     in property <bool> alt;
     height: 30px;
-    background: alt ? #f6f8fa : #ffffff;
+    background: alt ? Theme.row-alt : Theme.row;
     HorizontalLayout {
         Rectangle {
             width: Columns.name;
@@ -97,7 +363,7 @@ component ProcessLine inherits Rectangle {
                 height: 100%;
                 text: entry.name;
                 font-size: 13px;
-                color: #1b1b1b;
+                color: Theme.text;
                 vertical-alignment: center;
                 horizontal-alignment: left;
                 overflow: elide;
@@ -116,55 +382,63 @@ component ProcessLine inherits Rectangle {
     }
 }
 
-component NavButton inherits TouchArea {
+component NavEntry inherits Rectangle {
     in property <string> label;
-    in property <bool> selected;
-    height: 40px;
-    Rectangle {
-        x: 8px;
-        width: parent.width - 16px;
-        height: 100%;
-        border-radius: 8px;
-        background: root.selected ? #e7f2fb : (root.has-hover ? #f2f2f2 : transparent);
-        Rectangle {
-            x: 4px;
-            y: (parent.height - self.height) / 2;
-            width: 3px;
-            height: 18px;
-            border-radius: 2px;
-            background: root.selected ? #0f6cbd : transparent;
-        }
-        Text {
-            x: 18px;
-            width: parent.width - 28px;
-            height: 100%;
-            text: root.label;
-            vertical-alignment: center;
-            font-size: 14px;
-            font-weight: root.selected ? 600 : 400;
-            color: root.selected ? #0f6cbd : #1b1b1b;
-        }
-    }
-}
+    in property <string> badge: "";
+    in property <int> glyph: 1;
+    in property <bool> selected: false;
+    in property <bool> interactive: true;
+    in property <bool> expanded: true;
+    callback activated();
 
-component DisabledNav inherits Rectangle {
-    in property <string> label;
-    height: 36px;
-    opacity: 0.5;
-    HorizontalLayout {
-        padding-left: 22px;
-        spacing: 8px;
-        Text {
-            text: root.label;
-            vertical-alignment: center;
-            font-size: 14px;
-            color: #1b1b1b;
-        }
-        Text {
-            text: "準備中";
-            vertical-alignment: center;
-            font-size: 11px;
-            color: #6e6e6e;
+    height: 40px;
+    opacity: interactive ? 1 : 0.45;
+
+    touch := TouchArea {
+        enabled: root.interactive;
+        accessible-role: button;
+        accessible-label: root.badge == "" ? root.label : root.label + " " + root.badge;
+        clicked => { root.activated(); }
+
+        pill := Rectangle {
+            x: 6px;
+            y: 2px;
+            width: parent.width - 12px;
+            height: parent.height - 4px;
+            border-radius: 6px;
+            background: !root.interactive ? transparent : touch.pressed ? Theme.nav-pressed : root.selected ? Theme.nav-selected : touch.has-hover ? Theme.nav-hover : transparent;
+
+            SideGlyph {
+                x: root.expanded ? 14px : (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                glyph: root.glyph;
+                tint: root.selected ? Theme.accent-text : Theme.text;
+            }
+
+            if root.expanded: HorizontalLayout {
+                x: 40px;
+                y: 0px;
+                width: parent.width - 46px;
+                height: 100%;
+                spacing: 8px;
+                alignment: start;
+                Text {
+                    text: root.label;
+                    vertical-alignment: center;
+                    horizontal-stretch: 0;
+                    font-size: 14px;
+                    font-weight: root.selected ? 600 : 400;
+                    color: root.selected ? Theme.accent-text : Theme.text;
+                    overflow: elide;
+                }
+                if root.badge != "": Text {
+                    text: root.badge;
+                    vertical-alignment: center;
+                    horizontal-stretch: 0;
+                    font-size: 11px;
+                    color: Theme.text-muted;
+                }
+            }
         }
     }
 }
@@ -180,8 +454,8 @@ component ResourceButton inherits TouchArea {
         height: 100%;
         border-radius: 8px;
         border-width: 1px;
-        border-color: root.active ? #0f6cbd : #e1e1e1;
-        background: root.active ? #e7f2fb : (root.has-hover ? #f7f7f7 : #ffffff);
+        border-color: root.active ? Theme.accent : Theme.line;
+        background: root.pressed ? Theme.card-pressed : root.active ? Theme.nav-selected : root.has-hover ? Theme.card-hover : Theme.card;
         VerticalLayout {
             padding-left: 10px;
             padding-right: 10px;
@@ -191,14 +465,14 @@ component ResourceButton inherits TouchArea {
             Text {
                 text: root.title;
                 font-size: 12px;
-                color: #5d5d5d;
+                color: Theme.text-muted;
                 overflow: elide;
             }
             Text {
                 text: root.value;
                 font-size: 15px;
                 font-weight: 600;
-                color: root.kind == 3 ? #6e6e6e : root.kind == 2 ? #8a5a00 : #1b1b1b;
+                color: root.kind == 3 ? Theme.unsupported : root.kind == 2 ? Theme.unavailable : Theme.text;
                 overflow: elide;
             }
         }
@@ -208,10 +482,10 @@ component ResourceButton inherits TouchArea {
 component HistoryGraph inherits Rectangle {
     in property <[float]> points;
     height: 250px;
-    background: #f4f8fc;
+    background: Theme.graph-bg;
     border-radius: 8px;
     border-width: 1px;
-    border-color: #d5e3f0;
+    border-color: Theme.graph-border;
     VerticalLayout {
         padding: 12px;
         spacing: 6px;
@@ -220,16 +494,16 @@ component HistoryGraph inherits Rectangle {
             vertical-stretch: 1;
             VerticalLayout {
                 width: 42px;
-                Text { text: "100%"; font-size: 11px; color: #5d5d5d; height: 16px; }
+                Text { text: "100%"; font-size: 11px; color: Theme.text-muted; height: 16px; }
                 Rectangle { vertical-stretch: 1; }
-                Text { text: "0%"; font-size: 11px; color: #5d5d5d; height: 16px; }
+                Text { text: "0%"; font-size: 11px; color: Theme.text-muted; height: 16px; }
             }
             Rectangle {
                 horizontal-stretch: 1;
                 vertical-stretch: 1;
-                background: #ffffff;
+                background: Theme.graph-plot;
                 border-width: 1px;
-                border-color: #d0d7de;
+                border-color: Theme.graph-border;
                 HorizontalLayout {
                     spacing: 1px;
                     padding: 4px;
@@ -240,7 +514,7 @@ component HistoryGraph inherits Rectangle {
                             width: 100%;
                             y: parent.height - self.height;
                             height: pt < 0 ? 0px : parent.height * (min(max(pt, 0), 100) / 100);
-                            background: #0f6cbd;
+                            background: Theme.graph-bar;
                         }
                     }
                 }
@@ -248,9 +522,92 @@ component HistoryGraph inherits Rectangle {
         }
         HorizontalLayout {
             height: 18px;
-            Text { text: "60秒前"; font-size: 11px; color: #5d5d5d; }
+            Text { text: "60秒前"; font-size: 11px; color: Theme.text-muted; }
             Rectangle { horizontal-stretch: 1; }
-            Text { text: "現在"; font-size: 11px; color: #5d5d5d; }
+            Text { text: "現在"; font-size: 11px; color: Theme.text-muted; }
+        }
+    }
+}
+
+component ThemeChip inherits Rectangle {
+    in property <string> label;
+    in property <int> code;
+    property <bool> on: Theme.preference == root.code;
+    horizontal-stretch: 1;
+    height: 28px;
+
+    chip-touch := TouchArea {
+        clicked => { Theme.preference = root.code; }
+        accessible-role: button;
+        accessible-label: root.label;
+        accessible-checked: root.on;
+        Rectangle {
+            width: 100%;
+            height: 100%;
+            border-radius: 6px;
+            border-width: 1px;
+            border-color: root.on ? Theme.accent : Theme.line;
+            background: chip-touch.pressed ? Theme.nav-pressed : root.on ? Theme.nav-selected : chip-touch.has-hover ? Theme.nav-hover : Theme.chip;
+            Text {
+                width: 100%;
+                height: 100%;
+                text: root.label;
+                font-size: 11px;
+                font-weight: root.on ? 600 : 400;
+                color: root.on ? Theme.accent-text : Theme.text-secondary;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+    }
+}
+
+component ThemeSwitch inherits Rectangle {
+    in property <bool> expanded: true;
+    height: expanded ? 56px : 36px;
+
+    if !root.expanded: collapsed-touch := TouchArea {
+        accessible-role: button;
+        accessible-label: Theme.preference == 0 ? "表示はライト。クリックでダークに切り替え" : Theme.preference == 1 ? "表示はダーク。クリックでシステムに切り替え" : "表示はシステム。クリックでライトに切り替え";
+        clicked => {
+            Theme.preference = Theme.preference == 2 ? 0 : Theme.preference + 1;
+        }
+        Rectangle {
+            x: 6px;
+            y: 2px;
+            width: parent.width - 12px;
+            height: parent.height - 4px;
+            border-radius: 6px;
+            background: collapsed-touch.pressed ? Theme.nav-pressed : collapsed-touch.has-hover ? Theme.nav-hover : transparent;
+            Text {
+                width: 100%;
+                height: 100%;
+                text: Theme.preference == 0 ? "明" : Theme.preference == 1 ? "暗" : "自";
+                font-size: 13px;
+                font-weight: 600;
+                color: Theme.accent-text;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+    }
+
+    if root.expanded: VerticalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        spacing: 4px;
+        Text {
+            text: "表示";
+            font-size: 11px;
+            color: Theme.text-muted;
+            height: 14px;
+        }
+        HorizontalLayout {
+            spacing: 4px;
+            height: 28px;
+            ThemeChip { label: "ライト"; code: 0; }
+            ThemeChip { label: "ダーク"; code: 1; }
+            ThemeChip { label: "システム"; code: 2; }
         }
     }
 }
@@ -261,11 +618,12 @@ export component AppWindow inherits Window {
     preferred-height: 760px;
     min-width: 880px;
     min-height: 560px;
-    background: #f3f3f3;
+    background: Theme.canvas;
     default-font-family: "Segoe UI";
     default-font-size: 13px;
 
     in-out property <int> page: 0;
+    in-out property <bool> nav-expanded: true;
     in-out property <int> resource: 0;
     in-out property <string> sort-column: "cpu";
     in-out property <bool> sort-desc: true;
@@ -308,52 +666,129 @@ export component AppWindow inherits Window {
 
     HorizontalLayout {
         Rectangle {
-            width: 228px;
+            width: root.nav-expanded ? 232px : 56px;
             height: 100%;
-            background: #fbfbfb;
+            background: Theme.sidebar;
+            clip: true;
+            animate width { duration: 160ms; easing: cubic-bezier(0.23, 1, 0.32, 1); }
+
             VerticalLayout {
-                padding: 16px;
-                padding-top: 18px;
-                spacing: 4px;
-                Text {
-                    text: root.version-text;
-                    font-size: 20px;
-                    font-weight: 700;
-                    color: #0f6cbd;
+                padding-top: 8px;
+                padding-bottom: 12px;
+                spacing: 2px;
+
+                TouchArea {
+                    height: 36px;
+                    accessible-role: button;
+                    accessible-label: root.nav-expanded ? "ナビゲーションを折りたたむ" : "ナビゲーションを広げる";
+                    clicked => { root.nav-expanded = !root.nav-expanded; }
+                    SideGlyph {
+                        glyph: 0;
+                        x: root.nav-expanded ? 18px : (parent.width - self.width) / 2;
+                        y: (parent.height - self.height) / 2;
+                        tint: Theme.text;
+                    }
                 }
-                Text {
-                    text: "リソース監視";
-                    font-size: 12px;
-                    color: #5d5d5d;
-                    height: 22px;
+
+                if root.nav-expanded: Rectangle {
+                    height: 28px;
+                    Text {
+                        x: 16px;
+                        width: parent.width - 24px;
+                        height: 100%;
+                        text: root.version-text;
+                        font-size: 18px;
+                        font-weight: 700;
+                        color: Theme.accent;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
                 }
-                Rectangle { height: 8px; }
-                NavButton {
-                    label: "プロセス";
-                    selected: root.page == 0;
-                    clicked => { root.page = 0; }
+                if root.nav-expanded: Rectangle {
+                    height: 20px;
+                    Text {
+                        x: 16px;
+                        width: parent.width - 24px;
+                        height: 100%;
+                        text: "リソース監視";
+                        font-size: 12px;
+                        color: Theme.text-muted;
+                        vertical-alignment: center;
+                    }
                 }
-                NavButton {
-                    label: "パフォーマンス";
-                    selected: root.page == 1;
-                    clicked => { root.page = 1; }
+
+                nav-host := Rectangle {
+                    vertical-stretch: 1;
+                    clip: true;
+
+                    nav-flick := Flickable {
+                        width: 100%;
+                        height: 100%;
+                        mouse-drag-pan-enabled: false;
+                        VerticalLayout {
+                            width: parent.width;
+                            spacing: 2px;
+                            padding-top: 6px;
+                            NavEntry {
+                                label: "プロセス";
+                                glyph: 1;
+                                expanded: root.nav-expanded;
+                                selected: root.page == 0;
+                                activated => { root.page = 0; }
+                            }
+                            NavEntry {
+                                label: "パフォーマンス";
+                                glyph: 2;
+                                expanded: root.nav-expanded;
+                                selected: root.page == 1;
+                                activated => { root.page = 1; }
+                            }
+                            Rectangle { height: 6px; }
+                            NavEntry { label: "アプリの履歴"; badge: "準備中"; glyph: 3; expanded: root.nav-expanded; interactive: false; }
+                            NavEntry { label: "スタートアップ"; badge: "準備中"; glyph: 4; expanded: root.nav-expanded; interactive: false; }
+                            NavEntry { label: "ユーザー"; badge: "準備中"; glyph: 5; expanded: root.nav-expanded; interactive: false; }
+                            NavEntry { label: "詳細"; badge: "準備中"; glyph: 6; expanded: root.nav-expanded; interactive: false; }
+                            NavEntry { label: "サービス"; badge: "準備中"; glyph: 7; expanded: root.nav-expanded; interactive: false; }
+                        }
+                    }
+
+                    if nav-flick.content-height > nav-flick.height + 1px: WinScrollBar {
+                        horizontal: false;
+                        x: parent.width - self.width;
+                        y: 0px;
+                        width: 12px;
+                        height: 100%;
+                        maximum: max(0px, nav-flick.content-height - nav-flick.height);
+                        page-size: nav-flick.height;
+                        value <=> nav-flick.content-y;
+                    }
                 }
-                Rectangle { height: 8px; }
-                DisabledNav { label: "アプリの履歴"; }
-                DisabledNav { label: "スタートアップ"; }
-                DisabledNav { label: "ユーザー"; }
-                DisabledNav { label: "詳細"; }
-                DisabledNav { label: "サービス"; }
-                Rectangle { vertical-stretch: 1; }
-                Text {
-                    text: "GPL-3.0-only";
-                    font-size: 11px;
-                    color: #6e6e6e;
+
+                ThemeSwitch { expanded: root.nav-expanded; }
+
+                if root.nav-expanded: Rectangle {
+                    height: 16px;
+                    Text {
+                        x: 16px;
+                        width: parent.width - 24px;
+                        height: 100%;
+                        text: "GPL-3.0-only";
+                        font-size: 11px;
+                        color: Theme.text-muted;
+                        vertical-alignment: center;
+                    }
                 }
-                Text {
-                    text: "通常のユーザー権限で動作";
-                    font-size: 11px;
-                    color: #6e6e6e;
+                if root.nav-expanded: Rectangle {
+                    height: 32px;
+                    Text {
+                        x: 16px;
+                        y: 0px;
+                        width: parent.width - 24px;
+                        text: "通常のユーザー権限で動作";
+                        font-size: 11px;
+                        color: Theme.text-muted;
+                        wrap: word-wrap;
+                    }
                 }
             }
         }
@@ -361,7 +796,7 @@ export component AppWindow inherits Window {
         Rectangle {
             horizontal-stretch: 1;
             vertical-stretch: 1;
-            background: #f3f3f3;
+            background: Theme.canvas;
             if root.page == 0: VerticalLayout {
                 width: 100%;
                 height: 100%;
@@ -371,25 +806,25 @@ export component AppWindow inherits Window {
                     text: "プロセス";
                     font-size: 22px;
                     font-weight: 600;
-                    color: #1b1b1b;
+                    color: Theme.text;
                 }
                 Text {
                     text: root.status-text;
                     font-size: 12px;
-                    color: #3d3d3d;
+                    color: Theme.text-secondary;
                     wrap: word-wrap;
                 }
                 Text {
                     text: "N/A は計測不能（権限不足や計測開始直後など）。未対応はこの版では未実装。0 や 0.0% は実測値です。";
                     font-size: 12px;
-                    color: #5d5d5d;
+                    color: Theme.text-muted;
                     wrap: word-wrap;
                 }
                 if root.warning-visible: Rectangle {
-                    background: #fff4ce;
+                    background: Theme.warn-bg;
                     border-radius: 6px;
                     border-width: 1px;
-                    border-color: #e6c200;
+                    border-color: Theme.warn-border;
                     height: 36px;
                     Text {
                         x: 10px;
@@ -398,126 +833,218 @@ export component AppWindow inherits Window {
                         text: root.warning-text;
                         vertical-alignment: center;
                         font-size: 12px;
-                        color: #5c4a00;
+                        color: Theme.warn-text;
                         overflow: elide;
                     }
                 }
-                Rectangle {
+                process-frame := Rectangle {
                     vertical-stretch: 1;
-                    background: #ffffff;
+                    background: Theme.card;
                     border-radius: 8px;
                     border-width: 1px;
-                    border-color: #e1e1e1;
-                    flick := Flickable {
-                        width: 100%;
-                        height: 100%;
-                        VerticalLayout {
-                            width: max(flick.width, Columns.table);
-                            height: flick.height;
-                            Rectangle {
-                                height: 34px;
-                                background: #fafafa;
-                                border-color: #e1e1e1;
-                                border-width: 0px;
-                                HorizontalLayout {
-                                    HeaderCell {
-                                        label: "名前";
-                                        col-width: Columns.name;
-                                        active: root.sort-column == "name";
-                                        descending: root.sort-desc;
-                                        numeric: false;
-                                        clicked => { root.sort-requested("name"); }
-                                    }
-                                    HeaderCell {
-                                        label: "PID";
-                                        col-width: Columns.pid;
-                                        active: root.sort-column == "pid";
-                                        descending: root.sort-desc;
-                                        numeric: true;
-                                        clicked => { root.sort-requested("pid"); }
-                                    }
-                                    HeaderCell {
-                                        label: "CPU";
-                                        col-width: Columns.cpu;
-                                        active: root.sort-column == "cpu";
-                                        descending: root.sort-desc;
-                                        numeric: true;
-                                        clicked => { root.sort-requested("cpu"); }
-                                    }
-                                    HeaderCell {
-                                        label: "メモリ";
-                                        col-width: Columns.memory;
-                                        active: root.sort-column == "memory";
-                                        descending: root.sort-desc;
-                                        numeric: true;
-                                        clicked => { root.sort-requested("memory"); }
-                                    }
-                                    HeaderCell {
-                                        label: "ディスク";
-                                        col-width: Columns.disk;
-                                        active: root.sort-column == "disk";
-                                        descending: root.sort-desc;
-                                        numeric: true;
-                                        clicked => { root.sort-requested("disk"); }
-                                    }
-                                    HeaderCell {
-                                        label: "ネットワーク";
-                                        col-width: Columns.network;
-                                        active: root.sort-column == "network";
-                                        descending: root.sort-desc;
-                                        numeric: true;
-                                        clicked => { root.sort-requested("network"); }
-                                    }
-                                    HeaderCell {
-                                        label: "GPU 3D";
-                                        col-width: Columns.gpu3d;
-                                        active: root.sort-column == "gpu3d";
-                                        descending: root.sort-desc;
-                                        numeric: true;
-                                        clicked => { root.sort-requested("gpu3d"); }
-                                    }
-                                    HeaderCell {
-                                        label: "GPU Encode";
-                                        col-width: Columns.gpu-encode;
-                                        active: root.sort-column == "gpu-encode";
-                                        descending: root.sort-desc;
-                                        numeric: true;
-                                        clicked => { root.sort-requested("gpu-encode"); }
-                                    }
-                                    HeaderCell {
-                                        label: "GPU Decode";
-                                        col-width: Columns.gpu-decode;
-                                        active: root.sort-column == "gpu-decode";
-                                        descending: root.sort-desc;
-                                        numeric: true;
-                                        clicked => { root.sort-requested("gpu-decode"); }
-                                    }
-                                    HeaderCell {
-                                        label: "専用VRAM";
-                                        col-width: Columns.vram;
-                                        active: root.sort-column == "vram";
-                                        descending: root.sort-desc;
-                                        numeric: true;
-                                        clicked => { root.sort-requested("vram"); }
-                                    }
-                                    HeaderCell {
-                                        label: "共有GPU";
-                                        col-width: Columns.shared;
-                                        active: root.sort-column == "shared";
-                                        descending: root.sort-desc;
-                                        numeric: true;
-                                        clicked => { root.sort-requested("shared"); }
-                                    }
+                    border-color: Theme.line;
+                    clip: true;
+                    property <length> bar: 14px;
+
+                    function scroll-by(dx: length, dy: length) {
+                        if (process-list.content-width > process-list.visible-width) {
+                            process-list.content-x = max(process-list.visible-width - process-list.content-width, min(0px, process-list.content-x + dx));
+                        }
+                        if (process-list.content-height > process-list.visible-height) {
+                            process-list.content-y = max(process-list.visible-height - process-list.content-height, min(0px, process-list.content-y + dy));
+                        }
+                    }
+
+                    VerticalLayout {
+                        padding-right: process-frame.bar;
+                        padding-bottom: process-frame.bar;
+
+                        header-host := Rectangle {
+                            height: 34px;
+                            clip: true;
+                            background: Theme.header;
+                            HorizontalLayout {
+                                x: process-list.content-x;
+                                width: Columns.table;
+                                height: 100%;
+                                HeaderCell {
+                                    label: "名前";
+                                    col-width: Columns.name;
+                                    min-col: 96px;
+                                    active: root.sort-column == "name";
+                                    descending: root.sort-desc;
+                                    numeric: false;
+                                    sort-clicked => { root.sort-requested("name"); }
+                                    resized(next) => { Columns.name = next; }
+                                    wheel-scrolled(dx, dy) => { process-frame.scroll-by(dx, dy); }
+                                }
+                                HeaderCell {
+                                    label: "PID";
+                                    col-width: Columns.pid;
+                                    min-col: 56px;
+                                    active: root.sort-column == "pid";
+                                    descending: root.sort-desc;
+                                    numeric: true;
+                                    sort-clicked => { root.sort-requested("pid"); }
+                                    resized(next) => { Columns.pid = next; }
+                                    wheel-scrolled(dx, dy) => { process-frame.scroll-by(dx, dy); }
+                                }
+                                HeaderCell {
+                                    label: "CPU";
+                                    col-width: Columns.cpu;
+                                    min-col: 64px;
+                                    active: root.sort-column == "cpu";
+                                    descending: root.sort-desc;
+                                    numeric: true;
+                                    sort-clicked => { root.sort-requested("cpu"); }
+                                    resized(next) => { Columns.cpu = next; }
+                                    wheel-scrolled(dx, dy) => { process-frame.scroll-by(dx, dy); }
+                                }
+                                HeaderCell {
+                                    label: "メモリ";
+                                    col-width: Columns.memory;
+                                    min-col: 80px;
+                                    active: root.sort-column == "memory";
+                                    descending: root.sort-desc;
+                                    numeric: true;
+                                    sort-clicked => { root.sort-requested("memory"); }
+                                    resized(next) => { Columns.memory = next; }
+                                    wheel-scrolled(dx, dy) => { process-frame.scroll-by(dx, dy); }
+                                }
+                                HeaderCell {
+                                    label: "ディスク";
+                                    col-width: Columns.disk;
+                                    min-col: 88px;
+                                    active: root.sort-column == "disk";
+                                    descending: root.sort-desc;
+                                    numeric: true;
+                                    sort-clicked => { root.sort-requested("disk"); }
+                                    resized(next) => { Columns.disk = next; }
+                                    wheel-scrolled(dx, dy) => { process-frame.scroll-by(dx, dy); }
+                                }
+                                HeaderCell {
+                                    label: "ネットワーク";
+                                    col-width: Columns.network;
+                                    min-col: 96px;
+                                    active: root.sort-column == "network";
+                                    descending: root.sort-desc;
+                                    numeric: true;
+                                    sort-clicked => { root.sort-requested("network"); }
+                                    resized(next) => { Columns.network = next; }
+                                    wheel-scrolled(dx, dy) => { process-frame.scroll-by(dx, dy); }
+                                }
+                                HeaderCell {
+                                    label: "GPU 3D";
+                                    col-width: Columns.gpu3d;
+                                    min-col: 72px;
+                                    active: root.sort-column == "gpu3d";
+                                    descending: root.sort-desc;
+                                    numeric: true;
+                                    sort-clicked => { root.sort-requested("gpu3d"); }
+                                    resized(next) => { Columns.gpu3d = next; }
+                                    wheel-scrolled(dx, dy) => { process-frame.scroll-by(dx, dy); }
+                                }
+                                HeaderCell {
+                                    label: "GPU Encode";
+                                    col-width: Columns.gpu-encode;
+                                    min-col: 88px;
+                                    active: root.sort-column == "gpu-encode";
+                                    descending: root.sort-desc;
+                                    numeric: true;
+                                    sort-clicked => { root.sort-requested("gpu-encode"); }
+                                    resized(next) => { Columns.gpu-encode = next; }
+                                    wheel-scrolled(dx, dy) => { process-frame.scroll-by(dx, dy); }
+                                }
+                                HeaderCell {
+                                    label: "GPU Decode";
+                                    col-width: Columns.gpu-decode;
+                                    min-col: 88px;
+                                    active: root.sort-column == "gpu-decode";
+                                    descending: root.sort-desc;
+                                    numeric: true;
+                                    sort-clicked => { root.sort-requested("gpu-decode"); }
+                                    resized(next) => { Columns.gpu-decode = next; }
+                                    wheel-scrolled(dx, dy) => { process-frame.scroll-by(dx, dy); }
+                                }
+                                HeaderCell {
+                                    label: "専用VRAM";
+                                    col-width: Columns.vram;
+                                    min-col: 80px;
+                                    active: root.sort-column == "vram";
+                                    descending: root.sort-desc;
+                                    numeric: true;
+                                    sort-clicked => { root.sort-requested("vram"); }
+                                    resized(next) => { Columns.vram = next; }
+                                    wheel-scrolled(dx, dy) => { process-frame.scroll-by(dx, dy); }
+                                }
+                                HeaderCell {
+                                    label: "共有GPU";
+                                    col-width: Columns.shared;
+                                    min-col: 80px;
+                                    active: root.sort-column == "shared";
+                                    descending: root.sort-desc;
+                                    numeric: true;
+                                    sort-clicked => { root.sort-requested("shared"); }
+                                    resized(next) => { Columns.shared = next; }
+                                    wheel-scrolled(dx, dy) => { process-frame.scroll-by(dx, dy); }
                                 }
                             }
-                            ListView {
-                                vertical-stretch: 1;
+                            Rectangle {
+                                y: parent.height - self.height;
+                                height: 1px;
+                                width: 100%;
+                                background: Theme.line;
+                            }
+                        }
+
+                        list-host := Rectangle {
+                            vertical-stretch: 1;
+                            process-list := ListView {
+                                width: 100%;
+                                height: 100%;
+                                content-width: Columns.table;
+                                vertical-scrollbar-policy: ScrollBarPolicy.always-off;
+                                horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
                                 for entry[idx] in root.rows: ProcessLine {
+                                    width: Columns.table;
+                                    min-width: Columns.table;
+                                    max-width: Columns.table;
+                                    horizontal-stretch: 0;
                                     entry: entry;
                                     alt: mod(idx, 2) != 0;
                                 }
                             }
+                            if root.rows.length == 0: Text {
+                                x: 16px;
+                                y: 16px;
+                                width: parent.width - 32px;
+                                text: "表示できるプロセスはありません。";
+                                font-size: 13px;
+                                color: Theme.text-muted;
+                                wrap: word-wrap;
+                            }
                         }
+                    }
+
+                    WinScrollBar {
+                        horizontal: false;
+                        x: parent.width - self.width;
+                        y: 34px;
+                        width: process-frame.bar;
+                        height: parent.height - 34px - process-frame.bar;
+                        maximum: max(0px, process-list.content-height - process-list.visible-height);
+                        page-size: process-list.visible-height;
+                        value <=> process-list.content-y;
+                    }
+                    WinScrollBar {
+                        horizontal: true;
+                        x: 0px;
+                        y: parent.height - self.height;
+                        width: parent.width - process-frame.bar;
+                        height: process-frame.bar;
+                        maximum: max(0px, process-list.content-width - process-list.visible-width);
+                        page-size: process-list.visible-width;
+                        value <=> process-list.content-x;
                     }
                 }
             }
@@ -526,9 +1053,11 @@ export component AppWindow inherits Window {
                 height: 100%;
                 padding: 16px;
                 spacing: 16px;
-                ScrollView {
-                    width: 250px;
+                VScroll {
+                    width: 264px;
                     VerticalLayout {
+                        width: parent.width;
+                        height: max(self.min-height, parent.height);
                         spacing: 8px;
                         padding-right: 4px;
                         Text {
@@ -605,30 +1134,36 @@ export component AppWindow inherits Window {
                 Rectangle {
                     horizontal-stretch: 1;
                     vertical-stretch: 1;
-                    background: #ffffff;
+                    background: Theme.card;
                     border-radius: 8px;
                     border-width: 1px;
-                    border-color: #e1e1e1;
-                    VerticalLayout {
-                        padding: 20px;
-                        spacing: 8px;
-                        alignment: start;
+                    border-color: Theme.line;
+                    clip: true;
+                    VScroll {
+                        width: 100%;
+                        height: 100%;
+                        VerticalLayout {
+                            width: parent.width;
+                            height: max(self.min-height, parent.height);
+                            padding: 20px;
+                            spacing: 8px;
+                            alignment: start;
                         Text {
                             text: root.detail-title;
                             font-size: 20px;
                             font-weight: 600;
-                            color: #1b1b1b;
+                            color: Theme.text;
                         }
                         Text {
                             text: root.detail-value;
                             font-size: 32px;
                             font-weight: 600;
-                            color: root.detail-kind == 3 ? #6e6e6e : root.detail-kind == 2 ? #8a5a00 : #0f6cbd;
+                            color: root.detail-kind == 3 ? Theme.unsupported : root.detail-kind == 2 ? Theme.unavailable : Theme.accent;
                         }
                         Text {
                             text: root.detail-extra;
                             font-size: 13px;
-                            color: #3d3d3d;
+                            color: Theme.text-secondary;
                             wrap: word-wrap;
                         }
                         if root.detail-graph && !root.detail-graph-memory: HistoryGraph {
@@ -640,15 +1175,16 @@ export component AppWindow inherits Window {
                         Text {
                             text: root.detail-note;
                             font-size: 13px;
-                            color: #3d3d3d;
+                            color: Theme.text-secondary;
                             wrap: word-wrap;
                         }
                         Text {
                             text: "履歴のクリック選択と過去時点の上位プロセスは今後のフェーズで追加します。表示中も計測は続きます。";
                             font-size: 12px;
-                            color: #5d5d5d;
+                            color: Theme.text-muted;
                             wrap: word-wrap;
                         }
+                    }
                     }
                 }
             }

@@ -1,6 +1,6 @@
 //! Slint window. This module only copies published snapshots onto the UI thread.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use slint::{ComponentHandle, Model, ModelRc, Timer, TimerMode, VecModel};
@@ -28,6 +28,9 @@ pub fn run() -> Result<(), String> {
     let sampler = SamplerHandle::start()?;
     let ui = AppWindow::new().map_err(|err| format!("ウィンドウを作成できませんでした: {err}"))?;
     ui.set_version_text(format!("PULSE {}", env!("CARGO_PKG_VERSION")).into());
+    // System mode follows AppsUseLightTheme. Missing key stays light.
+    ui.global::<Theme>()
+        .set_system_light(crate::platform::apps_use_light_theme().unwrap_or(true));
 
     let state = Rc::new(RefCell::new(UiState {
         sort_column: SortColumn::Cpu,
@@ -57,12 +60,26 @@ pub fn run() -> Result<(), String> {
     let weak = ui.as_weak();
     let timer_state = Rc::clone(&state);
     let timer_latest = latest;
+    let theme_ticks = Cell::new(0u32);
     timer.start(TimerMode::Repeated, UI_REFRESH_INTERVAL, move || {
         let Some(ui) = weak.upgrade() else {
             return;
         };
         if let Some(sample) = timer_latest.load() {
             apply(&ui, &timer_state, &sample, false);
+        }
+        // Re-read the Windows app theme about every two seconds, and only while
+        // the choice is "system". A manual light/dark choice is left alone.
+        theme_ticks.set(theme_ticks.get().wrapping_add(1));
+        if theme_ticks.get().is_multiple_of(8) {
+            let theme = ui.global::<Theme>();
+            if theme.get_preference() == 2 {
+                if let Some(light) = crate::platform::apps_use_light_theme() {
+                    if theme.get_system_light() != light {
+                        theme.set_system_light(light);
+                    }
+                }
+            }
         }
     });
 

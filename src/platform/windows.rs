@@ -15,6 +15,7 @@ use windows::Win32::System::Diagnostics::ToolHelp::{
 use windows::Win32::System::ProcessStatus::{
     GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS, PROCESS_MEMORY_COUNTERS_EX2,
 };
+use windows::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD};
 use windows::Win32::System::SystemInformation::{
     GetLocalTime, GetSystemInfo, GlobalMemoryStatusEx, MEMORYSTATUSEX, SYSTEM_INFO,
 };
@@ -29,6 +30,29 @@ use crate::metric::MetricValue;
 use crate::model::{ProcessKey, RawProcess, RawSample};
 
 const MAX_PROCESSES: usize = 100_000;
+
+/// Read `AppsUseLightTheme`. A missing key or a failed call returns `None`.
+#[cfg_attr(not(feature = "ui"), allow(dead_code))]
+pub fn apps_use_light_theme() -> Option<bool> {
+    unsafe {
+        let mut data: u32 = 0;
+        let mut size = u32::try_from(size_of::<u32>()).unwrap_or(4);
+        let status = RegGetValueW(
+            HKEY_CURRENT_USER,
+            windows::core::w!("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize"),
+            windows::core::w!("AppsUseLightTheme"),
+            RRF_RT_REG_DWORD,
+            None,
+            Some((&mut data as *mut u32).cast()),
+            Some(&mut size),
+        );
+        if status.0 == 0 && size >= 4 {
+            Some(crate::theme::light_from_dword(data))
+        } else {
+            None
+        }
+    }
+}
 
 pub struct WindowsSystemProbe {
     last_memory_refresh: Option<Instant>,
