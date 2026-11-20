@@ -378,12 +378,22 @@ mod layout_tests {
     use super::*;
     use i_slint_backend_testing::ElementHandle;
     use slint::{ComponentHandle, ModelRc, VecModel};
+    use std::cell::Cell;
     use std::rc::Rc;
-    use std::sync::Once;
 
     fn backend() {
-        static ONCE: Once = Once::new();
-        ONCE.call_once(i_slint_backend_testing::init_no_event_loop);
+        // `init_no_event_loop` installs a per-thread backend. A process-wide
+        // Once leaves other test threads on Winit, which CI cannot open
+        // because it has no DISPLAY.
+        thread_local! {
+            static READY: Cell<bool> = const { Cell::new(false) };
+        }
+        READY.with(|ready| {
+            if !ready.get() {
+                i_slint_backend_testing::init_no_event_loop();
+                ready.set(true);
+            }
+        });
     }
 
     fn element(ui: &AppWindow, name: &str) -> ElementHandle {
