@@ -1,0 +1,17 @@
+# 変更履歴
+
+このファイルは [Keep a Changelog](https://keepachangelog.com/ja/1.1.0/) に近づけて書く。バージョンは SemVer。
+
+## [0.1.0] - Unreleased
+
+GitHub Release は作成していない。実行ファイルは GitHub Actions のアーティファクト `PULSE-windows-x64` にある。
+
+### 追加
+
+- Slint による Windows 11 風の基本ウィンドウ（プロセス、パフォーマンス。他のナビ項目は準備中）
+- プロセス一覧、CPU 使用率、プライベートワーキングセットの実測
+- 列ソート。`N/A` と `未対応` は数値の 0 と分け、ソートでも末尾に置く
+- 計測スレッドと UI スレッドの分離
+- 直近 60 秒・500 ms 間隔の固定長リングバッファ（120 個、全プロセス）
+- CPU とメモリの 60 秒グラフ。ディスク、ネットワーク、GPU、VRAM は `未対応`
+- Windows 向け CI（fmt、clippy、test、release ビルド、`PULSE.exe` のアップロード）

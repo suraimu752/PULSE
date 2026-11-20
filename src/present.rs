@@ -1,0 +1,325 @@
+//! Turn snapshots into the strings the window shows. No dummy numbers are introduced here.
+
+use crate::format::{
+    bytes_kind, format_bytes, format_memory_pair, format_percent, format_rate_pair, percent_kind,
+    DisplayKind,
+};
+use crate::metric::MetricValue;
+use crate::model::{ProcessSnapshot, ResourceId, Snapshot};
+use crate::sort::{sort_processes, SortColumn};
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PresentedRow {
+    pub name: String,
+    pub pid: String,
+    pub cpu: String,
+    pub cpu_kind: DisplayKind,
+    pub memory: String,
+    pub memory_kind: DisplayKind,
+    pub disk: String,
+    pub disk_kind: DisplayKind,
+    pub network: String,
+    pub network_kind: DisplayKind,
+    pub gpu3d: String,
+    pub gpu3d_kind: DisplayKind,
+    pub gpu_encode: String,
+    pub gpu_encode_kind: DisplayKind,
+    pub gpu_decode: String,
+    pub gpu_decode_kind: DisplayKind,
+    pub vram: String,
+    pub vram_kind: DisplayKind,
+    pub shared: String,
+    pub shared_kind: DisplayKind,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DetailText {
+    pub title: String,
+    pub value: String,
+    pub kind: DisplayKind,
+    pub extra: String,
+    pub note: String,
+    pub show_graph: bool,
+    pub graph_is_memory: bool,
+}
+
+#[cfg(feature = "ui")]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResourceCard {
+    pub text: String,
+    pub kind: DisplayKind,
+}
+
+#[cfg(feature = "ui")]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResourceCards {
+    pub cpu: ResourceCard,
+    pub memory: ResourceCard,
+    pub disk: ResourceCard,
+    pub network: ResourceCard,
+    pub gpu3d: ResourceCard,
+    pub gpu_encode: ResourceCard,
+    pub gpu_decode: ResourceCard,
+    pub vram_dedicated: ResourceCard,
+    pub vram_shared: ResourceCard,
+}
+
+pub fn present_rows(
+    snapshot: &Snapshot,
+    column: SortColumn,
+    descending: bool,
+) -> Vec<PresentedRow> {
+    let mut processes = snapshot.processes.clone();
+    sort_processes(&mut processes, column, descending);
+    processes.iter().map(present_row).collect()
+}
+
+pub fn status_line(
+    snapshot: &Snapshot,
+    self_cpu: MetricValue<f64>,
+    self_memory: MetricValue<u64>,
+    updated_text: &str,
+) -> String {
+    format!(
+        "プロセス {} 件    最終更新 {updated_text}    CPU {}    メモリ {}    PULSE 自身 CPU {} / メモリ {}",
+        snapshot.processes.len(),
+        format_percent(snapshot.cpu_percent),
+        format_memory_pair(snapshot.memory_used_bytes, snapshot.memory_total_bytes),
+        format_percent(self_cpu),
+        format_bytes(self_memory),
+    )
+}
+
+#[cfg(feature = "ui")]
+pub fn present_cards(snapshot: &Snapshot) -> ResourceCards {
+    ResourceCards {
+        cpu: card_percent(snapshot.cpu_percent),
+        memory: ResourceCard {
+            text: format_memory_pair(snapshot.memory_used_bytes, snapshot.memory_total_bytes),
+            kind: memory_kind(snapshot.memory_used_bytes, snapshot.memory_total_bytes),
+        },
+        disk: card_pair(snapshot.disk_read_bps, snapshot.disk_write_bps),
+        network: card_pair(snapshot.net_send_bps, snapshot.net_recv_bps),
+        gpu3d: card_percent(snapshot.gpu_3d_percent),
+        gpu_encode: card_percent(snapshot.gpu_encode_percent),
+        gpu_decode: card_percent(snapshot.gpu_decode_percent),
+        vram_dedicated: ResourceCard {
+            text: format_bytes(snapshot.vram_dedicated_bytes),
+            kind: bytes_kind(snapshot.vram_dedicated_bytes),
+        },
+        vram_shared: ResourceCard {
+            text: format_bytes(snapshot.vram_shared_bytes),
+            kind: bytes_kind(snapshot.vram_shared_bytes),
+        },
+    }
+}
+
+pub fn present_detail(snapshot: &Snapshot, resource: ResourceId) -> DetailText {
+    match resource {
+        ResourceId::Cpu => DetailText {
+            title: "CPU".to_string(),
+            value: format_percent(snapshot.cpu_percent),
+            kind: percent_kind(snapshot.cpu_percent),
+            extra: format!(
+                "{}    {}",
+                logical_processor_text(snapshot.logical_processors),
+                interval_text(snapshot)
+            ),
+            note: "全論理プロセッサの容量に対する使用率です。分母は GetSystemTimes のカーネル時間＋ユーザー時間（アイドルを含む総プロセッサ時間）、分子は同じ区間のビジー時間（カーネル−アイドル＋ユーザー）です。プロセス行の CPU は GetProcessTimes のカーネル＋ユーザー時間を同じ分母で割った値です。100% は全論理プロセッサが使用中という意味です。最初の 1 区間は差分がないため N/A です。論理プロセッサごとの内訳は未実装です。".to_string(),
+            show_graph: !matches!(snapshot.cpu_percent, MetricValue::Unsupported),
+            graph_is_memory: false,
+        },
+        ResourceId::Memory => DetailText {
+            title: "メモリ".to_string(),
+            value: format_memory_pair(snapshot.memory_used_bytes, snapshot.memory_total_bytes),
+            kind: memory_kind(snapshot.memory_used_bytes, snapshot.memory_total_bytes),
+            extra: memory_extra(snapshot),
+            note: "システムの使用量は GlobalMemoryStatusEx の物理メモリ合計から利用可能量を引いた値です。プロセスのメモリはプライベートワーキングセット（GetProcessMemoryInfo / PROCESS_MEMORY_COUNTERS_EX2.PrivateWorkingSetSize）で、約 1 秒ごとに更新します。タスクマネージャーの「アクティブプライベートワーキングセット」とは定義が少し違うため、数値は完全には一致しないことがあります。グラフは使用率です。".to_string(),
+            show_graph: !matches!(snapshot.memory_total_bytes, MetricValue::Unsupported),
+            graph_is_memory: true,
+        },
+        ResourceId::Disk => unsupported_detail(
+            "ディスク",
+            "ディスクの読み書き速度は Phase 1 では計測しません。未対応は実測の 0 ではありません。物理ディスクの転送量とプロセスの I/O 要求量は別の値として、後から Collector を追加します。",
+        ),
+        ResourceId::Network => unsupported_detail(
+            "ネットワーク",
+            "ネットワークの送受信速度は Phase 1 では計測しません。未対応は実測の 0 ではありません。送受信は分けて、計測できない通信は欠測として扱う予定です。",
+        ),
+        ResourceId::Gpu3d => unsupported_detail(
+            "GPU 3D",
+            "GPU 3D 使用率は Phase 1 では計測しません。複数の GPU エンジンの使用率は単純に足し合わせられないため、未実装のあいだは 0 と表示しません。",
+        ),
+        ResourceId::GpuEncode => unsupported_detail(
+            "GPU Encode",
+            "GPU Encode 使用率は Phase 1 では計測しません。未対応は実測の 0 ではありません。",
+        ),
+        ResourceId::GpuDecode => unsupported_detail(
+            "GPU Decode",
+            "GPU Decode 使用率は Phase 1 では計測しません。未対応は実測の 0 ではありません。",
+        ),
+        ResourceId::VramDedicated => unsupported_detail(
+            "専用 VRAM",
+            "専用 GPU メモリは Phase 1 では計測しません。未対応は実測の 0 ではありません。",
+        ),
+        ResourceId::VramShared => unsupported_detail(
+            "共有 GPU メモリ",
+            "共有 GPU メモリは Phase 1 では計測しません。未対応は実測の 0 ではありません。",
+        ),
+    }
+}
+
+fn present_row(process: &ProcessSnapshot) -> PresentedRow {
+    let (disk, disk_kind) = format_rate_pair(process.disk_read_bps, process.disk_write_bps);
+    let (network, network_kind) = format_rate_pair(process.net_send_bps, process.net_recv_bps);
+    PresentedRow {
+        name: process.name.clone(),
+        pid: process.key.pid.to_string(),
+        cpu: format_percent(process.cpu_percent),
+        cpu_kind: percent_kind(process.cpu_percent),
+        memory: format_bytes(process.memory_bytes),
+        memory_kind: bytes_kind(process.memory_bytes),
+        disk,
+        disk_kind,
+        network,
+        network_kind,
+        gpu3d: format_percent(process.gpu_3d_percent),
+        gpu3d_kind: percent_kind(process.gpu_3d_percent),
+        gpu_encode: format_percent(process.gpu_encode_percent),
+        gpu_encode_kind: percent_kind(process.gpu_encode_percent),
+        gpu_decode: format_percent(process.gpu_decode_percent),
+        gpu_decode_kind: percent_kind(process.gpu_decode_percent),
+        vram: format_bytes(process.vram_dedicated_bytes),
+        vram_kind: bytes_kind(process.vram_dedicated_bytes),
+        shared: format_bytes(process.vram_shared_bytes),
+        shared_kind: bytes_kind(process.vram_shared_bytes),
+    }
+}
+
+fn memory_kind(used: MetricValue<u64>, total: MetricValue<u64>) -> DisplayKind {
+    match (used, total) {
+        (MetricValue::Value(0), MetricValue::Value(_)) => DisplayKind::Zero,
+        (MetricValue::Value(_), MetricValue::Value(_)) => DisplayKind::Value,
+        (MetricValue::Unsupported, _) | (_, MetricValue::Unsupported) => DisplayKind::Unsupported,
+        _ => DisplayKind::Unavailable,
+    }
+}
+
+#[cfg(feature = "ui")]
+fn card_percent(value: MetricValue<f64>) -> ResourceCard {
+    ResourceCard {
+        text: format_percent(value),
+        kind: percent_kind(value),
+    }
+}
+
+#[cfg(feature = "ui")]
+fn card_pair(read: MetricValue<f64>, write: MetricValue<f64>) -> ResourceCard {
+    let (text, kind) = format_rate_pair(read, write);
+    ResourceCard { text, kind }
+}
+
+fn unsupported_detail(title: &str, note: &str) -> DetailText {
+    DetailText {
+        title: title.to_string(),
+        value: "未対応".to_string(),
+        kind: DisplayKind::Unsupported,
+        extra: "Collector は未接続です".to_string(),
+        note: note.to_string(),
+        show_graph: false,
+        graph_is_memory: false,
+    }
+}
+
+fn logical_processor_text(value: MetricValue<u32>) -> String {
+    match value {
+        MetricValue::Value(count) => format!("論理プロセッサ {count} 個"),
+        MetricValue::Unavailable => "論理プロセッサ数: N/A".to_string(),
+        MetricValue::Unsupported => "論理プロセッサ数: 未対応".to_string(),
+    }
+}
+
+fn interval_text(snapshot: &Snapshot) -> String {
+    match snapshot.interval {
+        Some(interval) => format!("直近の計測区間 {} ms", interval.as_millis()),
+        None => "計測区間はまだ確定していません".to_string(),
+    }
+}
+
+fn memory_extra(snapshot: &Snapshot) -> String {
+    let percent = match (snapshot.memory_used_bytes, snapshot.memory_total_bytes) {
+        (MetricValue::Value(used), MetricValue::Value(total)) if total > 0 => {
+            format!("使用率 {:.1}%", (used as f64) / (total as f64) * 100.0)
+        }
+        (MetricValue::Unsupported, _) | (_, MetricValue::Unsupported) => {
+            "使用率: 未対応".to_string()
+        }
+        _ => "使用率: N/A".to_string(),
+    };
+    format!("{percent}    {}", interval_text(snapshot))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::ProcessKey;
+    use std::time::SystemTime;
+
+    fn snapshot() -> Snapshot {
+        Snapshot {
+            sequence: 1,
+            taken_at: SystemTime::UNIX_EPOCH,
+            interval: Some(std::time::Duration::from_millis(500)),
+            logical_processors: MetricValue::Value(8),
+            cpu_percent: MetricValue::Value(0.0),
+            memory_used_bytes: MetricValue::Value(0),
+            memory_total_bytes: MetricValue::Value(1024 * 1024),
+            disk_read_bps: MetricValue::Unsupported,
+            disk_write_bps: MetricValue::Unsupported,
+            net_send_bps: MetricValue::Unsupported,
+            net_recv_bps: MetricValue::Unsupported,
+            gpu_3d_percent: MetricValue::Unsupported,
+            gpu_encode_percent: MetricValue::Unsupported,
+            gpu_decode_percent: MetricValue::Unsupported,
+            vram_dedicated_bytes: MetricValue::Unsupported,
+            vram_shared_bytes: MetricValue::Unsupported,
+            processes: vec![ProcessSnapshot {
+                key: ProcessKey {
+                    pid: 4,
+                    creation_time_100ns: 1,
+                },
+                parent_pid: 0,
+                name: "System".to_string(),
+                cpu_percent: MetricValue::Value(0.0),
+                memory_bytes: MetricValue::Value(0),
+                disk_read_bps: MetricValue::Unsupported,
+                disk_write_bps: MetricValue::Unsupported,
+                net_send_bps: MetricValue::Unsupported,
+                net_recv_bps: MetricValue::Unsupported,
+                gpu_3d_percent: MetricValue::Unsupported,
+                gpu_encode_percent: MetricValue::Unsupported,
+                gpu_decode_percent: MetricValue::Unsupported,
+                vram_dedicated_bytes: MetricValue::Unsupported,
+                vram_shared_bytes: MetricValue::Unsupported,
+            }],
+            warning: None,
+        }
+    }
+
+    #[test]
+    fn zero_measurements_stay_distinct_from_unsupported_columns() {
+        let rows = present_rows(&snapshot(), SortColumn::Name, false);
+        assert_eq!(rows[0].cpu, "0.0%");
+        assert_eq!(rows[0].cpu_kind, DisplayKind::Zero);
+        assert_eq!(rows[0].memory, "0 B");
+        assert_eq!(rows[0].disk, "未対応");
+        assert_eq!(rows[0].disk_kind, DisplayKind::Unsupported);
+        assert_eq!(rows[0].gpu3d, "未対応");
+        let detail = present_detail(&snapshot(), ResourceId::Disk);
+        assert_eq!(detail.value, "未対応");
+        assert!(!detail.show_graph);
+        let cpu = present_detail(&snapshot(), ResourceId::Cpu);
+        assert_eq!(cpu.value, "0.0%");
+        assert!(cpu.show_graph);
+    }
+}
