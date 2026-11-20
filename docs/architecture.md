@@ -43,7 +43,7 @@ Windows API / 将来の PDH・ETW
 | `src/sampler.rs` | スレッドと履歴の保持 |
 | `src/sort.rs` | 表示時ソート |
 | `src/format.rs` / `src/present.rs` | 日本語の表示文 |
-| `ui/app.slint` | レイアウト |
+| `ui/app.slint` | レイアウトと表示色。スクロールバー、折りたたみナビ、列幅、テーマはここだけで完結し、計測スレッドには渡さない |
 | `src/ui.rs` | モデルの更新。`ui` feature のときだけコンパイル |
 
 `ui` feature を外すと、Linux から `cargo check --target x86_64-pc-windows-gnu --no-default-features` で Windows 計測コードを型検査できます。Slint のクロスコンパイルは不要です。

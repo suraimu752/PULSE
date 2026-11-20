@@ -30,6 +30,23 @@ pub fn make_enrichers() -> Vec<Box<dyn MetricEnricher>> {
 ///
 /// On Windows this is the local clock. Elsewhere it is UTC and labeled as such,
 /// so a development build does not pretend to know the user's timezone.
+/// Windows app theme: `HKCU\\...\\Themes\\Personalize\\AppsUseLightTheme`.
+///
+/// `Some(true)` is light, `Some(false)` is dark. `None` means this build cannot
+/// read the key (not Windows, or the value is missing). Callers then keep light
+/// for system mode instead of guessing dark.
+#[cfg_attr(not(feature = "ui"), allow(dead_code))]
+pub fn apps_use_light_theme() -> Option<bool> {
+    #[cfg(windows)]
+    {
+        windows::apps_use_light_theme()
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
 pub fn format_local_hms(time: SystemTime) -> String {
     #[cfg(windows)]
     {

@@ -17,6 +17,9 @@ default = ["ui"]
 # non-Windows host (`cargo check --target x86_64-pc-windows-gnu --no-default-features`)
 # without cross-compiling the GUI toolkit.
 ui = ["dep:slint"]
+# Development-only demo collector. Release builds omit this feature, so
+# `PULSE.exe` from CI cannot enter demo mode.
+mock = ["ui"]
 
 [dependencies]
 slint = { version = "1.19.0", optional = true, default-features = false, features = [
@@ -34,9 +37,13 @@ windows = { version = "0.62.2", features = [
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_ProcessStatus",
     "Win32_System_SystemInformation",
+    "Win32_System_Registry",
     "Win32_System_Threading",
     "Win32_UI_WindowsAndMessaging",
 ] }
+
+[dev-dependencies]
+i-slint-backend-testing = "1.19.0"
 
 [build-dependencies]
 slint-build = "1.19.0"

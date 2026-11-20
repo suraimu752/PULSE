@@ -3357,6 +3357,7 @@ dependencies = [
 name = "pulse"
 version = "0.1.0"
 dependencies = [
+ "i-slint-backend-testing",
  "slint",
  "slint-build",
  "windows",
