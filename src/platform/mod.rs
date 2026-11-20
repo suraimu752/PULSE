@@ -6,6 +6,14 @@ use std::time::UNIX_EPOCH;
 
 use crate::collector::{MetricEnricher, SystemProbe};
 
+#[cfg(windows)]
+mod disk;
+#[cfg(windows)]
+mod gpu;
+#[cfg(windows)]
+mod network;
+#[cfg(windows)]
+mod pdh;
 #[cfg(not(windows))]
 mod stub;
 #[cfg(windows)]
@@ -23,7 +31,18 @@ pub fn make_probe() -> Box<dyn SystemProbe> {
 }
 
 pub fn make_enrichers() -> Vec<Box<dyn MetricEnricher>> {
-    Vec::new()
+    #[cfg(windows)]
+    {
+        vec![
+            Box::new(disk::DiskEnricher::new()),
+            Box::new(network::NetworkEnricher::new()),
+            Box::new(gpu::GpuEnricher::new()),
+        ]
+    }
+    #[cfg(not(windows))]
+    {
+        Vec::new()
+    }
 }
 
 /// Local time of day for the status line.
@@ -63,5 +82,35 @@ pub fn format_local_hms(time: SystemTime) -> String {
         let minutes = (secs / 60) % 60;
         let seconds = secs % 60;
         format!("{hours:02}:{minutes:02}:{seconds:02} UTC")
+    }
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+    use crate::metric::MetricValue;
+    use crate::model::ProcessNetMode;
+
+    #[test]
+    fn enrichers_do_not_rewrite_cpu_or_invent_process_network() {
+        let mut probe = windows::WindowsSystemProbe::new();
+        let mut sample = probe.probe();
+        let before: Vec<_> = sample
+            .processes
+            .iter()
+            .map(|process| (process.pid, process.cpu_time_100ns, process.memory_bytes))
+            .collect();
+        for enricher in &mut make_enrichers() {
+            enricher.enrich(&mut sample);
+        }
+        assert_eq!(sample.process_net, ProcessNetMode::NeedsAdmin);
+        for (process, (pid, cpu, memory)) in sample.processes.iter().zip(&before) {
+            assert_eq!(process.pid, *pid);
+            assert_eq!(process.cpu_time_100ns, *cpu);
+            assert_eq!(process.memory_bytes, *memory);
+            assert!(matches!(process.net_send_bytes, MetricValue::Unavailable));
+            assert!(matches!(process.net_recv_bytes, MetricValue::Unavailable));
+            assert!(!matches!(process.disk_read_bytes, MetricValue::Unsupported));
+        }
     }
 }
