@@ -7,6 +7,10 @@ pub struct LaunchOptions {
     pub page: i32,
     /// 0 light, 1 dark, 2 system. `None` leaves the default (system).
     pub theme: Option<i32>,
+    /// `columns` or `resources`. Opens that menu after the window is created.
+    pub menu: Option<String>,
+    pub hide_column: Option<String>,
+    pub hide_resource: Option<String>,
 }
 
 impl LaunchOptions {
@@ -16,6 +20,9 @@ impl LaunchOptions {
             size: None,
             page: 0,
             theme: None,
+            menu: None,
+            hide_column: None,
+            hide_resource: None,
         };
         let mut args = std::env::args().skip(1);
         while let Some(arg) = args.next() {
@@ -70,6 +77,26 @@ impl LaunchOptions {
                         ))
                     }
                 });
+            } else if arg == "--menu" {
+                let text = args.next().ok_or_else(|| {
+                    "--menu の後に columns または resources が必要です".to_string()
+                })?;
+                if text != "columns" && text != "resources" {
+                    return Err(format!(
+                        "未知のメニューです: {text}（columns または resources）"
+                    ));
+                }
+                options.menu = Some(text);
+            } else if arg == "--hide-column" {
+                let text = args
+                    .next()
+                    .ok_or_else(|| "--hide-column の後に列名が必要です".to_string())?;
+                options.hide_column = Some(text);
+            } else if arg == "--hide-resource" {
+                let text = args
+                    .next()
+                    .ok_or_else(|| "--hide-resource の後に資源名が必要です".to_string())?;
+                options.hide_resource = Some(text);
             } else if arg == "--help" || arg == "-h" {
                 return Err(help_text());
             } else {
@@ -97,7 +124,7 @@ fn parse_size(text: &str) -> Result<(f32, f32), String> {
 }
 
 fn help_text() -> String {
-    "[--size 1280x720] [--page process|performance] [--theme light|dark|system] [--demo normal|many|gaps|special]\n--demo は mock feature 付きの開発ビルドだけが受け付けます。".to_string()
+    "[--size 1280x720] [--page process|performance] [--theme light|dark|system] [--menu columns|resources] [--hide-column disk] [--hide-resource gpu-encode] [--demo normal|many|gaps|special]\n--demo は mock feature 付きの開発ビルドだけが受け付けます。列と資源の表示は %APPDATA%\\PULSE\\ui.cfg（Linux では ~/.config/PULSE/ui.cfg）に保存します。".to_string()
 }
 
 #[cfg(test)]

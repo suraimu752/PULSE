@@ -15,6 +15,9 @@ GitHub Release は作成していない。実行ファイルは GitHub Actions �
 - 各資源の簡易グラフ、60 秒のメイングラフ、現在の上位 5 プロセス
 - 開発専用 `mock` feature（`DEMO DATA`）。通常の Release ビルドでは使えない
 - ヘッドレス UI テスト（`i-slint-backend-testing`）。1280×720、1920×1080、800×600、ライトとダーク
+- 詳細グラフがカードの右端を越えないようにした。資源一覧と詳細の間をドラッグして幅を変えられる
+- プロセスの列、パフォーマンスの資源を、メニューのチェックと上下、または列ヘッダーのドラッグで並べ替え・表示切替できる。名前列は常に表示。選んでいる資源を隠すと次の表示中の資源に移る
+- その設定は `%APPDATA%\PULSE\ui.cfg`（Linux では `~/.config/PULSE/ui.cfg`）に保存する。通信はしない
 - ライト / ダーク / システムの表示切替。システムは Windows の `AppsUseLightTheme` に従う
 - 開発用のデザインスキル（impeccable、taste-skill、emil-design-eng）を `.cursor/skills/` に同梱。実行ファイルにはリンクしない
 - プロセス一覧、CPU 使用率、プライベートワーキングセットの実測

@@ -90,6 +90,27 @@ pub fn run(options: LaunchOptions) -> Result<(), String> {
     let latest = sampler.latest();
     wire_sort(&ui, &state, latest.clone());
     wire_resource(&ui, &state, latest.clone());
+    let prefs = Rc::new(RefCell::new(session_prefs(&options)?));
+    apply_prefs(&ui, &prefs.borrow());
+    if !prefs.borrow().resource_shown[state.borrow().resource as usize] {
+        let next = prefs
+            .borrow()
+            .resource_order
+            .iter()
+            .copied()
+            .find(|id| prefs.borrow().resource_shown[*id as usize])
+            .unwrap_or(0);
+        state.borrow_mut().resource = ResourceId::from_index(next);
+        ui.set_resource(next);
+    }
+    wire_layout(&ui, &state, latest.clone(), &prefs);
+    if options.menu.as_deref() == Some("columns") {
+        ui.set_page(0);
+        ui.set_open_column_menu(true);
+    } else if options.menu.as_deref() == Some("resources") {
+        ui.set_page(1);
+        ui.set_open_resource_menu(true);
+    }
 
     if let Some(sample) = latest.load() {
         apply(&ui, &state, &sample, true);
@@ -153,6 +174,137 @@ fn wire_sort(ui: &AppWindow, state: &Rc<RefCell<UiState>>, latest: crate::sample
             apply(&ui, &state, &sample, true);
         }
     });
+}
+
+fn session_prefs(options: &LaunchOptions) -> Result<crate::uiprefs::UiPrefs, String> {
+    let mut prefs = crate::uiprefs::load();
+    if let Some(name) = &options.hide_column {
+        if !prefs.hide_column_named(name) {
+            return Err(format!(
+                "隠せない列です: {name}（name は常に表示。pid / cpu / memory / disk / network / gpu3d / gpu-encode / gpu-decode / vram / shared）"
+            ));
+        }
+    }
+    if let Some(name) = &options.hide_resource {
+        if crate::uiprefs::resource_id(name).is_none() || !prefs.hide_resource_named(name) {
+            return Err(format!(
+                "隠せない資源です: {name}（cpu / memory / disk / network / gpu3d / gpu-encode / gpu-decode / vram / shared）"
+            ));
+        }
+    }
+    Ok(prefs)
+}
+
+fn apply_prefs(ui: &AppWindow, prefs: &crate::uiprefs::UiPrefs) {
+    let columns = ui.global::<Columns>();
+    columns.set_order(ModelRc::new(VecModel::from(prefs.column_order.clone())));
+    columns.set_shown(ModelRc::new(VecModel::from(prefs.column_shown.clone())));
+    ui.set_resource_order(ModelRc::new(VecModel::from(prefs.resource_order.clone())));
+    ui.set_resource_shown(ModelRc::new(VecModel::from(prefs.resource_shown.clone())));
+    ui.set_resource_pref(prefs.resource_width);
+}
+
+fn column_widths(ui: &AppWindow) -> Vec<f32> {
+    let columns = ui.global::<Columns>();
+    vec![
+        columns.get_name(),
+        columns.get_pid(),
+        columns.get_cpu(),
+        columns.get_memory(),
+        columns.get_disk(),
+        columns.get_network(),
+        columns.get_gpu3d(),
+        columns.get_gpu_encode(),
+        columns.get_gpu_decode(),
+        columns.get_vram(),
+        columns.get_shared(),
+    ]
+}
+
+fn wire_layout(
+    ui: &AppWindow,
+    state: &Rc<RefCell<UiState>>,
+    latest: crate::sampler::SharedLatest,
+    prefs: &Rc<RefCell<crate::uiprefs::UiPrefs>>,
+) {
+    {
+        let ui_weak = ui.as_weak();
+        let prefs = Rc::clone(prefs);
+        ui.on_column_toggled(move |id| {
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
+            prefs.borrow_mut().toggle_column(id);
+            apply_prefs(&ui, &prefs.borrow());
+            crate::uiprefs::save(&prefs.borrow());
+        });
+    }
+    {
+        let ui_weak = ui.as_weak();
+        let prefs = Rc::clone(prefs);
+        ui.on_column_moved(move |id, delta| {
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
+            prefs.borrow_mut().move_column(id, delta);
+            apply_prefs(&ui, &prefs.borrow());
+            crate::uiprefs::save(&prefs.borrow());
+        });
+    }
+    {
+        let ui_weak = ui.as_weak();
+        let prefs = Rc::clone(prefs);
+        ui.on_column_dragged(move |id, dx| {
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
+            let widths = column_widths(&ui);
+            prefs.borrow_mut().drag_column(id, dx, &widths);
+            apply_prefs(&ui, &prefs.borrow());
+            crate::uiprefs::save(&prefs.borrow());
+        });
+    }
+    {
+        let ui_weak = ui.as_weak();
+        let prefs = Rc::clone(prefs);
+        let state = Rc::clone(state);
+        let latest = latest.clone();
+        ui.on_resource_toggled(move |id| {
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
+            let selected = ui.get_resource();
+            let next = prefs.borrow_mut().toggle_resource(id, selected);
+            apply_prefs(&ui, &prefs.borrow());
+            crate::uiprefs::save(&prefs.borrow());
+            if next != selected {
+                ui.set_resource(next);
+                state.borrow_mut().resource = ResourceId::from_index(next);
+                if let Some(sample) = latest.load() {
+                    apply(&ui, &state, &sample, true);
+                }
+            }
+        });
+    }
+    {
+        let ui_weak = ui.as_weak();
+        let prefs = Rc::clone(prefs);
+        ui.on_resource_moved(move |id, delta| {
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
+            prefs.borrow_mut().move_resource(id, delta);
+            apply_prefs(&ui, &prefs.borrow());
+            crate::uiprefs::save(&prefs.borrow());
+        });
+    }
+    {
+        let prefs = Rc::clone(prefs);
+        ui.on_resource_resized(move |width| {
+            prefs.borrow_mut().resource_width = width;
+            crate::uiprefs::save(&prefs.borrow());
+        });
+    }
 }
 
 fn wire_resource(
@@ -543,6 +695,183 @@ mod layout_tests {
         ui.global::<Columns>().set_name(420.0);
         let after = ui.get_table_width();
         assert!(after > before, "column resize did not grow the table width");
+        let _ = ui.hide();
+    }
+
+    #[test]
+    fn graph_stays_inside_the_detail_card() {
+        for dark in [false, true] {
+            for (width, height) in [(1280.0, 720.0), (1920.0, 1080.0), (800.0, 600.0)] {
+                let ui = open_performance(width, height, dark);
+                let graph = element(&ui, "detail-graph");
+                let detail = element(&ui, "detail-column");
+                let column = element(&ui, "resource-column");
+                let graph_right = graph.absolute_position().x + graph.size().width;
+                let detail_right = detail.absolute_position().x + detail.size().width;
+                let graph_left = graph.absolute_position().x;
+                let detail_left = detail.absolute_position().x;
+                assert!(
+                    graph_left >= detail_left + 8.0,
+                    "{width}x{height} dark={dark}: graph left {graph_left} is not inset from {detail_left}"
+                );
+                assert!(
+                    graph_right <= detail_right - 8.0,
+                    "{width}x{height} dark={dark}: graph right {graph_right} passes the card edge {detail_right}"
+                );
+                assert!(
+                    column.size().width + 1.0 >= 180.0,
+                    "resource column {} is below the minimum",
+                    column.size().width
+                );
+                assert!(
+                    detail.size().width + 1.0 >= 240.0,
+                    "detail card {} is below the minimum",
+                    detail.size().width
+                );
+                assert!(column.absolute_position().x + column.size().width <= detail_left + 8.0);
+                let _ = ui.hide();
+            }
+        }
+    }
+
+    #[test]
+    fn hidden_column_drops_out_and_reorder_moves_the_header() {
+        let ui = open_performance(1280.0, 720.0, false);
+        ui.set_page(0);
+        ui.show().expect("show");
+        let before = ui.get_table_width();
+        let mut prefs = crate::uiprefs::UiPrefs::default();
+        prefs.toggle_column(4);
+        let columns = ui.global::<Columns>();
+        columns.set_shown(ModelRc::new(VecModel::from(prefs.column_shown.clone())));
+        assert!(
+            ui.get_table_width() < before - 100.0,
+            "hiding disk did not shrink the table"
+        );
+        assert!(ElementHandle::find_by_accessible_label(&ui, "ディスク")
+            .next()
+            .is_none());
+        prefs.move_column(2, -1);
+        prefs.move_column(2, -1);
+        columns.set_order(ModelRc::new(VecModel::from(prefs.column_order.clone())));
+        let cpu = ElementHandle::find_by_accessible_label(&ui, "CPU")
+            .next()
+            .expect("cpu header");
+        let name = ElementHandle::find_by_accessible_label(&ui, "名前")
+            .next()
+            .expect("name header");
+        assert!(cpu.absolute_position().x < name.absolute_position().x);
+        let _ = ui.hide();
+    }
+
+    #[test]
+    fn hiding_the_selected_resource_keeps_a_visible_selection() {
+        let ui = open_performance(1280.0, 720.0, false);
+        let mut prefs = crate::uiprefs::UiPrefs::default();
+        let next = prefs.toggle_resource(0, ui.get_resource());
+        assert_eq!(next, 1);
+        ui.set_resource(next);
+        ui.set_detail_title("選択中".into());
+        ui.set_resource_shown(ModelRc::new(VecModel::from(prefs.resource_shown)));
+        ui.show().expect("show");
+        assert!(ElementHandle::find_by_accessible_label(&ui, "CPU")
+            .next()
+            .is_none());
+        assert!(ElementHandle::find_by_accessible_label(&ui, "メモリ")
+            .next()
+            .is_some());
+        assert_eq!(ui.get_resource(), 1);
+        let _ = ui.hide();
+    }
+
+    #[test]
+    fn wider_resource_pref_moves_the_splitter() {
+        let ui = open_performance(1280.0, 720.0, false);
+        ui.set_resource_pref(320.0);
+        let column = element(&ui, "resource-column");
+        let detail = element(&ui, "detail-column");
+        assert!(
+            (column.size().width - 320.0).abs() < 4.0,
+            "column width {}",
+            column.size().width
+        );
+        assert!(detail.absolute_position().x >= column.absolute_position().x + column.size().width);
+        let _ = ui.hide();
+    }
+
+    fn inside(inner: &ElementHandle, outer: &ElementHandle) -> bool {
+        let at = inner.absolute_position();
+        let size = inner.size();
+        let outer_at = outer.absolute_position();
+        let outer_size = outer.size();
+        at.x >= outer_at.x - 1.0
+            && at.y >= outer_at.y - 1.0
+            && at.x + size.width <= outer_at.x + outer_size.width + 1.0
+            && at.y + size.height <= outer_at.y + outer_size.height + 1.0
+    }
+
+    #[test]
+    fn column_menu_stays_inside_the_window_and_holds_its_rows() {
+        let ui = open_performance(1280.0, 720.0, false);
+        ui.set_page(0);
+        ui.set_column_menu_open(true);
+        ui.show().expect("show");
+        let menu = element(&ui, "column-menu");
+        let at = menu.absolute_position();
+        let size = menu.size();
+        assert!(
+            size.width >= 260.0 && size.height > 200.0,
+            "column menu is {} x {}",
+            size.width,
+            size.height
+        );
+        assert!(at.x >= 0.0 && at.y >= 0.0);
+        assert!(at.x + size.width <= 1280.0 + 1.0);
+        assert!(at.y + size.height <= 720.0 + 1.0);
+        let down = ElementHandle::find_by_accessible_label(&ui, "名前 を下へ")
+            .next()
+            .expect("name down button");
+        assert!(
+            inside(&down, &menu),
+            "down button {:?} is outside the menu {:?} {:?}",
+            (down.absolute_position(), down.size()),
+            at,
+            size
+        );
+        let button = ElementHandle::find_by_accessible_label(&ui, "資源の表示").next();
+        assert!(
+            button.is_none(),
+            "resource menu button is on the process page"
+        );
+        let _ = ui.hide();
+    }
+
+    #[test]
+    fn resource_menu_button_is_not_covered_by_the_scrollbar() {
+        let ui = open_performance(800.0, 600.0, true);
+        let button = ElementHandle::find_by_accessible_label(&ui, "資源の表示")
+            .next()
+            .expect("resource menu button");
+        let column = element(&ui, "resource-column");
+        let button_right = button.absolute_position().x + button.size().width;
+        let column_right = column.absolute_position().x + column.size().width;
+        assert!(
+            button_right <= column_right - 14.0,
+            "button right {button_right} meets the scrollbar at {column_right}"
+        );
+        assert!(button.size().width >= 48.0);
+        ui.set_resource_menu_open(true);
+        let menu = element(&ui, "resource-menu");
+        let at = menu.absolute_position();
+        let size = menu.size();
+        assert!(size.width >= 240.0 && size.height > 160.0);
+        assert!(at.x >= 0.0 && at.y >= 0.0);
+        assert!(at.x + size.width <= 800.0 + 1.0);
+        assert!(at.y + size.height <= 600.0 + 1.0);
+        let up = ElementHandle::find_by_accessible_label(&ui, "CPU を下へ")
+            .next()
+            .expect("cpu down");
+        assert!(inside(&up, &menu));
         let _ = ui.hide();
     }
 }

@@ -87,8 +87,48 @@ export global Columns {
     in-out property <length> gpu-decode: 112px;
     in-out property <length> vram: 112px;
     in-out property <length> shared: 128px;
-    // Live sum, so horizontal scrolling follows a user resize.
-    out property <length> table: name + pid + cpu + memory + disk + network + gpu3d + gpu-encode + gpu-decode + vram + shared;
+    in-out property <[int]> order: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+    in-out property <[bool]> shown: [true, true, true, true, true, true, true, true, true, true, true];
+
+    public pure function width-for(id: int) -> length {
+        if (id == 0) { root.name }
+        else if (id == 1) { root.pid }
+        else if (id == 2) { root.cpu }
+        else if (id == 3) { root.memory }
+        else if (id == 4) { root.disk }
+        else if (id == 5) { root.network }
+        else if (id == 6) { root.gpu3d }
+        else if (id == 7) { root.gpu-encode }
+        else if (id == 8) { root.gpu-decode }
+        else if (id == 9) { root.vram }
+        else { root.shared }
+    }
+    public pure function min-for(id: int) -> length {
+        if (id == 0) { 96px }
+        else if (id == 1) { 64px }
+        else if (id == 4) { 96px }
+        else if (id == 5) { 96px }
+        else if (id == 7 || id == 8) { 88px }
+        else { 72px }
+    }
+    pure function span(id: int) -> length {
+        root.shown[id] ? root.width-for(id) : 0px
+    }
+    public function set-width(id: int, next: length) {
+        if (id == 0) { root.name = next; }
+        else if (id == 1) { root.pid = next; }
+        else if (id == 2) { root.cpu = next; }
+        else if (id == 3) { root.memory = next; }
+        else if (id == 4) { root.disk = next; }
+        else if (id == 5) { root.network = next; }
+        else if (id == 6) { root.gpu3d = next; }
+        else if (id == 7) { root.gpu-encode = next; }
+        else if (id == 8) { root.gpu-decode = next; }
+        else if (id == 9) { root.vram = next; }
+        else if (id == 10) { root.shared = next; }
+    }
+    // Hidden columns contribute nothing, so the horizontal range matches what is on screen.
+    out property <length> table: span(0) + span(1) + span(2) + span(3) + span(4) + span(5) + span(6) + span(7) + span(8) + span(9) + span(10);
 }
 
 // Original mark drawn in this file. Not a Microsoft icon asset.
@@ -185,6 +225,8 @@ component HeaderCell inherits Rectangle {
     callback resized(length);
     callback sort-clicked();
     callback wheel-scrolled(length, length);
+    callback context-menu();
+    callback dragged(length);
 
     width: col-width;
     preferred-width: col-width;
@@ -194,6 +236,8 @@ component HeaderCell inherits Rectangle {
     property <string> mark: active ? (descending ? " ▼" : " ▲") : "";
     property <length> press-width: col-width;
     property <length> press-abs: 0px;
+    property <length> down-x: 0px;
+    property <bool> dragging: false;
 
     function on-wheel(event: PointerScrollEvent) {
         if (event.modifiers.shift) {
@@ -206,7 +250,30 @@ component HeaderCell inherits Rectangle {
     sort-area := TouchArea {
         width: parent.width - 12px;
         height: 100%;
-        clicked => { root.sort-clicked(); }
+        accessible-role: button;
+        accessible-label: root.label;
+        clicked => {
+            if (!root.dragging) {
+                root.sort-clicked();
+            }
+        }
+        pointer-event(event) => {
+            if (event.button == PointerEventButton.right && event.kind == PointerEventKind.down) {
+                root.context-menu();
+            }
+            if (event.button == PointerEventButton.left && event.kind == PointerEventKind.down) {
+                root.down-x = self.mouse-x;
+                root.dragging = false;
+            }
+            if (event.button == PointerEventButton.left && event.kind == PointerEventKind.up && root.dragging) {
+                root.dragged(self.mouse-x - root.down-x);
+            }
+        }
+        moved => {
+            if (self.pressed && (self.mouse-x - root.down-x > 8px || root.down-x - self.mouse-x > 8px)) {
+                root.dragging = true;
+            }
+        }
         scroll-event(event) => {
             root.on-wheel(event);
             accept
@@ -341,19 +408,18 @@ component VScroll inherits Rectangle {
     }
 }
 
-component ValueCell inherits Rectangle {
-    in property <string> value;
-    in property <CellKind> kind;
-    in property <length> col-width;
-    width: col-width;
+component RowValue inherits Rectangle {
+    in property <int> column-id;
+    in property <ProcessRow> entry;
+    width: 100%;
     height: 100%;
-    property <color> fg: kind == CellKind.unsupported ? Theme.unsupported : kind == CellKind.unavailable ? Theme.unavailable : Theme.text;
+    property <CellKind> kind: column-id == 2 ? entry.cpu-kind : column-id == 3 ? entry.memory-kind : column-id == 4 ? entry.disk-kind : column-id == 5 ? entry.network-kind : column-id == 6 ? entry.gpu3d-kind : column-id == 7 ? entry.gpu-encode-kind : column-id == 8 ? entry.gpu-decode-kind : column-id == 9 ? entry.vram-kind : column-id == 10 ? entry.shared-kind : CellKind.value;
     Text {
         x: 0px;
         width: parent.width - 8px;
         height: 100%;
-        text: value;
-        color: fg;
+        text: column-id == 1 ? entry.pid : column-id == 2 ? entry.cpu : column-id == 3 ? entry.memory : column-id == 4 ? entry.disk : column-id == 5 ? entry.network : column-id == 6 ? entry.gpu3d : column-id == 7 ? entry.gpu-encode : column-id == 8 ? entry.gpu-decode : column-id == 9 ? entry.vram : entry.shared;
+        color: root.kind == CellKind.unsupported ? Theme.unsupported : root.kind == CellKind.unavailable ? Theme.unavailable : Theme.text;
         font-size: 13px;
         horizontal-alignment: right;
         vertical-alignment: center;
@@ -367,10 +433,12 @@ component ProcessLine inherits Rectangle {
     height: 30px;
     background: alt ? Theme.row-alt : Theme.row;
     HorizontalLayout {
-        Rectangle {
-            width: Columns.name;
+        for id in Columns.order: Rectangle {
+            width: Columns.shown[id] ? Columns.width-for(id) : 0px;
+            horizontal-stretch: 0;
             height: 100%;
-            Text {
+            clip: true;
+            if Columns.shown[id] && id == 0: Text {
                 x: 8px;
                 width: parent.width - 12px;
                 height: 100%;
@@ -381,17 +449,11 @@ component ProcessLine inherits Rectangle {
                 horizontal-alignment: left;
                 overflow: elide;
             }
+            if Columns.shown[id] && id != 0: RowValue {
+                column-id: id;
+                entry: root.entry;
+            }
         }
-        ValueCell { col-width: Columns.pid; value: entry.pid; kind: CellKind.value; }
-        ValueCell { col-width: Columns.cpu; value: entry.cpu; kind: entry.cpu-kind; }
-        ValueCell { col-width: Columns.memory; value: entry.memory; kind: entry.memory-kind; }
-        ValueCell { col-width: Columns.disk; value: entry.disk; kind: entry.disk-kind; }
-        ValueCell { col-width: Columns.network; value: entry.network; kind: entry.network-kind; }
-        ValueCell { col-width: Columns.gpu3d; value: entry.gpu3d; kind: entry.gpu3d-kind; }
-        ValueCell { col-width: Columns.gpu-encode; value: entry.gpu-encode; kind: entry.gpu-encode-kind; }
-        ValueCell { col-width: Columns.gpu-decode; value: entry.gpu-decode; kind: entry.gpu-decode-kind; }
-        ValueCell { col-width: Columns.vram; value: entry.vram; kind: entry.vram-kind; }
-        ValueCell { col-width: Columns.shared; value: entry.shared; kind: entry.shared-kind; }
     }
 }
 
@@ -531,6 +593,8 @@ component HistoryGraph inherits Rectangle {
     callback picked(int);
     height: 220px;
     min-width: 0px;
+    preferred-width: 0px;
+    horizontal-stretch: 1;
     background: Theme.graph-bg;
     border-radius: 8px;
     border-width: 1px;
@@ -629,6 +693,69 @@ component ThemeChip inherits Rectangle {
                 font-size: 11px;
                 font-weight: root.on ? 600 : 400;
                 color: root.on ? Theme.accent-text : Theme.text-secondary;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+    }
+}
+
+component ArrangeRow inherits Rectangle {
+    in property <string> label;
+    in property <bool> checked;
+    in property <bool> locked: false;
+    in property <bool> can-up: false;
+    in property <bool> can-down: false;
+    callback toggled();
+    callback up();
+    callback down();
+    height: 30px;
+    HorizontalLayout {
+        spacing: 4px;
+        padding-left: 4px;
+        padding-right: 4px;
+        check := TouchArea {
+            enabled: !root.locked;
+            horizontal-stretch: 1;
+            clicked => { root.toggled(); }
+            Text {
+                width: 100%;
+                height: 100%;
+                text: (root.checked ? "☑  " : "☐  ") + root.label;
+                font-size: 13px;
+                color: root.locked ? Theme.text-muted : Theme.text;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+        }
+        TouchArea {
+            width: 28px;
+            enabled: root.can-up;
+            accessible-role: button;
+            accessible-label: root.label + " を上へ";
+            clicked => { root.up(); }
+            Text {
+                width: 100%;
+                height: 100%;
+                text: "↑";
+                font-size: 14px;
+                color: root.can-up ? Theme.text : Theme.text-muted;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+        TouchArea {
+            width: 28px;
+            enabled: root.can-down;
+            accessible-role: button;
+            accessible-label: root.label + " を下へ";
+            clicked => { root.down(); }
+            Text {
+                width: 100%;
+                height: 100%;
+                text: "↓";
+                font-size: 14px;
+                color: root.can-down ? Theme.text : Theme.text-muted;
                 horizontal-alignment: center;
                 vertical-alignment: center;
             }
@@ -751,8 +878,64 @@ export component AppWindow inherits Window {
     callback resource-requested(int);
     // Phase 3 can recompute the top list from this index. The live values stay current.
     callback history-picked(int);
+    callback column-toggled(int);
+    callback column-moved(int, int);
+    callback column-dragged(int, length);
+    callback resource-toggled(int);
+    callback resource-moved(int, int);
+    callback resource-resized(length);
+
+    in-out property <bool> open-column-menu: false;
+    in-out property <bool> open-resource-menu: false;
+    in-out property <bool> column-menu-open: false;
+    in-out property <bool> resource-menu-open: false;
+    in-out property <length> resource-pref: 220px;
+    in-out property <[int]> resource-order: [0, 1, 2, 3, 4, 5, 6, 7, 8];
+    in-out property <[bool]> resource-shown: [true, true, true, true, true, true, true, true, true];
 
     out property <length> table-width: Columns.table;
+
+    pure function column-key(id: int) -> string {
+        if (id == 0) { "name" }
+        else if (id == 1) { "pid" }
+        else if (id == 2) { "cpu" }
+        else if (id == 3) { "memory" }
+        else if (id == 4) { "disk" }
+        else if (id == 5) { "network" }
+        else if (id == 6) { "gpu3d" }
+        else if (id == 7) { "gpu-encode" }
+        else if (id == 8) { "gpu-decode" }
+        else if (id == 9) { "vram" }
+        else { "shared" }
+    }
+    pure function column-label(id: int) -> string {
+        if (id == 0) { "名前" }
+        else if (id == 1) { "PID" }
+        else if (id == 2) { "CPU" }
+        else if (id == 3) { "メモリ" }
+        else if (id == 4) { "ディスク" }
+        else if (id == 5) { "ネットワーク" }
+        else if (id == 6) { "GPU 3D" }
+        else if (id == 7) { "GPU Encode" }
+        else if (id == 8) { "GPU Decode" }
+        else if (id == 9) { "専用VRAM" }
+        else { "共有GPU" }
+    }
+    pure function resource-label(id: int) -> string {
+        if (id == 0) { "CPU" }
+        else if (id == 1) { "メモリ" }
+        else if (id == 2) { "ディスク" }
+        else if (id == 3) { "ネットワーク" }
+        else if (id == 4) { "GPU 3D" }
+        else if (id == 5) { "GPU Encode" }
+        else if (id == 6) { "GPU Decode" }
+        else if (id == 7) { "専用VRAM" }
+        else { "共有GPUメモリ" }
+    }
+    pure function any-resource() -> bool {
+        root.resource-shown[0] || root.resource-shown[1] || root.resource-shown[2] || root.resource-shown[3] || root.resource-shown[4] || root.resource-shown[5] || root.resource-shown[6] || root.resource-shown[7] || root.resource-shown[8]
+    }
+
 
     HorizontalLayout {
         Rectangle {
@@ -912,6 +1095,32 @@ export component AppWindow inherits Window {
                         vertical-alignment: center;
                         accessible-label: "DEMO DATA";
                     }
+                    Rectangle { horizontal-stretch: 1; }
+                    column-menu-button := TouchArea {
+                        width: 72px;
+                        height: 28px;
+                        accessible-role: button;
+                        accessible-label: "列の表示";
+                        clicked => { root.column-menu-open = !root.column-menu-open; }
+                        Rectangle {
+                            width: 100%;
+                            height: 100%;
+                            border-radius: 6px;
+                            border-width: 1px;
+                            border-color: column-menu-button.has-hover ? Theme.accent : Theme.line;
+                            background: column-menu-button.pressed ? Theme.nav-pressed : Theme.card;
+                            Text {
+                                width: 100%;
+                                height: 100%;
+                                text: "列";
+                                font-size: 12px;
+                                font-weight: 600;
+                                color: Theme.text;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
                 }
                 Text {
                     text: root.status-text;
@@ -972,126 +1181,24 @@ export component AppWindow inherits Window {
                                 x: process-list.content-x;
                                 width: Columns.table;
                                 height: 100%;
-                                HeaderCell {
-                                    label: "名前";
-                                    col-width: Columns.name;
-                                    min-col: 96px;
-                                    active: root.sort-column == "name";
-                                    descending: root.sort-desc;
-                                    numeric: false;
-                                    sort-clicked => { root.sort-requested("name"); }
-                                    resized(next) => { Columns.name = next; }
-                                    wheel-scrolled(dx, dy) => { process-frame.scroll-by(dx, dy); }
-                                }
-                                HeaderCell {
-                                    label: "PID";
-                                    col-width: Columns.pid;
-                                    min-col: 56px;
-                                    active: root.sort-column == "pid";
-                                    descending: root.sort-desc;
-                                    numeric: true;
-                                    sort-clicked => { root.sort-requested("pid"); }
-                                    resized(next) => { Columns.pid = next; }
-                                    wheel-scrolled(dx, dy) => { process-frame.scroll-by(dx, dy); }
-                                }
-                                HeaderCell {
-                                    label: "CPU";
-                                    col-width: Columns.cpu;
-                                    min-col: 64px;
-                                    active: root.sort-column == "cpu";
-                                    descending: root.sort-desc;
-                                    numeric: true;
-                                    sort-clicked => { root.sort-requested("cpu"); }
-                                    resized(next) => { Columns.cpu = next; }
-                                    wheel-scrolled(dx, dy) => { process-frame.scroll-by(dx, dy); }
-                                }
-                                HeaderCell {
-                                    label: "メモリ";
-                                    col-width: Columns.memory;
-                                    min-col: 80px;
-                                    active: root.sort-column == "memory";
-                                    descending: root.sort-desc;
-                                    numeric: true;
-                                    sort-clicked => { root.sort-requested("memory"); }
-                                    resized(next) => { Columns.memory = next; }
-                                    wheel-scrolled(dx, dy) => { process-frame.scroll-by(dx, dy); }
-                                }
-                                HeaderCell {
-                                    label: "ディスク";
-                                    col-width: Columns.disk;
-                                    min-col: 88px;
-                                    active: root.sort-column == "disk";
-                                    descending: root.sort-desc;
-                                    numeric: true;
-                                    sort-clicked => { root.sort-requested("disk"); }
-                                    resized(next) => { Columns.disk = next; }
-                                    wheel-scrolled(dx, dy) => { process-frame.scroll-by(dx, dy); }
-                                }
-                                HeaderCell {
-                                    label: "ネットワーク";
-                                    col-width: Columns.network;
-                                    min-col: 96px;
-                                    active: root.sort-column == "network";
-                                    descending: root.sort-desc;
-                                    numeric: true;
-                                    sort-clicked => { root.sort-requested("network"); }
-                                    resized(next) => { Columns.network = next; }
-                                    wheel-scrolled(dx, dy) => { process-frame.scroll-by(dx, dy); }
-                                }
-                                HeaderCell {
-                                    label: "GPU 3D";
-                                    col-width: Columns.gpu3d;
-                                    min-col: 72px;
-                                    active: root.sort-column == "gpu3d";
-                                    descending: root.sort-desc;
-                                    numeric: true;
-                                    sort-clicked => { root.sort-requested("gpu3d"); }
-                                    resized(next) => { Columns.gpu3d = next; }
-                                    wheel-scrolled(dx, dy) => { process-frame.scroll-by(dx, dy); }
-                                }
-                                HeaderCell {
-                                    label: "GPU Encode";
-                                    col-width: Columns.gpu-encode;
-                                    min-col: 88px;
-                                    active: root.sort-column == "gpu-encode";
-                                    descending: root.sort-desc;
-                                    numeric: true;
-                                    sort-clicked => { root.sort-requested("gpu-encode"); }
-                                    resized(next) => { Columns.gpu-encode = next; }
-                                    wheel-scrolled(dx, dy) => { process-frame.scroll-by(dx, dy); }
-                                }
-                                HeaderCell {
-                                    label: "GPU Decode";
-                                    col-width: Columns.gpu-decode;
-                                    min-col: 88px;
-                                    active: root.sort-column == "gpu-decode";
-                                    descending: root.sort-desc;
-                                    numeric: true;
-                                    sort-clicked => { root.sort-requested("gpu-decode"); }
-                                    resized(next) => { Columns.gpu-decode = next; }
-                                    wheel-scrolled(dx, dy) => { process-frame.scroll-by(dx, dy); }
-                                }
-                                HeaderCell {
-                                    label: "専用VRAM";
-                                    col-width: Columns.vram;
-                                    min-col: 80px;
-                                    active: root.sort-column == "vram";
-                                    descending: root.sort-desc;
-                                    numeric: true;
-                                    sort-clicked => { root.sort-requested("vram"); }
-                                    resized(next) => { Columns.vram = next; }
-                                    wheel-scrolled(dx, dy) => { process-frame.scroll-by(dx, dy); }
-                                }
-                                HeaderCell {
-                                    label: "共有GPU";
-                                    col-width: Columns.shared;
-                                    min-col: 80px;
-                                    active: root.sort-column == "shared";
-                                    descending: root.sort-desc;
-                                    numeric: true;
-                                    sort-clicked => { root.sort-requested("shared"); }
-                                    resized(next) => { Columns.shared = next; }
-                                    wheel-scrolled(dx, dy) => { process-frame.scroll-by(dx, dy); }
+                                for id in Columns.order: Rectangle {
+                                    width: Columns.shown[id] ? Columns.width-for(id) : 0px;
+                                    height: 100%;
+                                    clip: true;
+                                    horizontal-stretch: 0;
+                                    if Columns.shown[id]: HeaderCell {
+                                        label: root.column-label(id);
+                                        col-width: Columns.width-for(id);
+                                        min-col: Columns.min-for(id);
+                                        active: root.sort-column == root.column-key(id);
+                                        descending: root.sort-desc;
+                                        numeric: id != 0;
+                                        sort-clicked => { root.sort-requested(root.column-key(id)); }
+                                        resized(next) => { Columns.set-width(id, next); }
+                                        wheel-scrolled(dx, dy) => { process-frame.scroll-by(dx, dy); }
+                                        context-menu => { root.column-menu-open = true; }
+                                        dragged(dx) => { root.column-dragged(id, dx); }
+                                    }
                                 }
                             }
                             Rectangle {
@@ -1153,200 +1260,414 @@ export component AppWindow inherits Window {
                     }
                 }
             }
-            if root.page == 1: perf-page := HorizontalLayout {
+            if root.page == 1: perf-page := Rectangle {
                 width: 100%;
                 height: 100%;
-                padding: 12px;
-                spacing: 12px;
-                resource-column := VScroll {
-                    width: 220px;
-                    horizontal-stretch: 0;
-                    vertical-stretch: 1;
-                    VerticalLayout {
-                        width: parent.width;
-                        spacing: 6px;
-                        padding-right: 2px;
-                        Text {
-                            text: "パフォーマンス";
-                            font-size: 20px;
-                            font-weight: 600;
-                            height: 28px;
-                            color: Theme.text;
-                            overflow: elide;
-                        }
-                        if root.demo: Text {
-                            text: "DEMO DATA";
-                            font-size: 12px;
-                            font-weight: 700;
-                            color: Theme.unavailable;
-                            height: 18px;
-                            accessible-label: "DEMO DATA";
-                        }
-                        ResourceButton {
-                            title: "CPU";
-                            value: root.cpu-summary;
-                            kind: root.cpu-kind;
-                            spark: root.cpu-spark;
-                            active: root.resource == 0;
-                            clicked => { root.resource = 0; root.resource-requested(0); }
-                        }
-                        ResourceButton {
-                            title: "メモリ";
-                            value: root.memory-summary;
-                            kind: root.memory-kind;
-                            spark: root.memory-spark;
-                            active: root.resource == 1;
-                            clicked => { root.resource = 1; root.resource-requested(1); }
-                        }
-                        ResourceButton {
-                            title: "ディスク";
-                            value: root.disk-summary;
-                            kind: root.disk-kind;
-                            spark: root.disk-spark;
-                            active: root.resource == 2;
-                            clicked => { root.resource = 2; root.resource-requested(2); }
-                        }
-                        ResourceButton {
-                            title: "ネットワーク";
-                            value: root.network-summary;
-                            kind: root.network-kind;
-                            spark: root.network-spark;
-                            active: root.resource == 3;
-                            clicked => { root.resource = 3; root.resource-requested(3); }
-                        }
-                        ResourceButton {
-                            title: "GPU 3D";
-                            value: root.gpu3d-summary;
-                            kind: root.gpu3d-kind;
-                            spark: root.gpu3d-spark;
-                            active: root.resource == 4;
-                            clicked => { root.resource = 4; root.resource-requested(4); }
-                        }
-                        ResourceButton {
-                            title: "GPU Encode";
-                            value: root.gpu-encode-summary;
-                            kind: root.gpu-encode-kind;
-                            spark: root.gpu-encode-spark;
-                            active: root.resource == 5;
-                            clicked => { root.resource = 5; root.resource-requested(5); }
-                        }
-                        ResourceButton {
-                            title: "GPU Decode";
-                            value: root.gpu-decode-summary;
-                            kind: root.gpu-decode-kind;
-                            spark: root.gpu-decode-spark;
-                            active: root.resource == 6;
-                            clicked => { root.resource = 6; root.resource-requested(6); }
-                        }
-                        ResourceButton {
-                            title: "専用VRAM";
-                            value: root.vram-summary;
-                            kind: root.vram-kind;
-                            spark: root.vram-spark;
-                            active: root.resource == 7;
-                            clicked => { root.resource = 7; root.resource-requested(7); }
-                        }
-                        ResourceButton {
-                            title: "共有GPUメモリ";
-                            value: root.shared-summary;
-                            kind: root.shared-kind;
-                            spark: root.shared-spark;
-                            active: root.resource == 8;
-                            clicked => { root.resource = 8; root.resource-requested(8); }
-                        }
-                    }
-                }
-                detail-column := Rectangle {
-                    horizontal-stretch: 1;
-                    vertical-stretch: 1;
-                    min-width: 0px;
-                    min-height: 0px;
-                    background: Theme.card;
-                    border-radius: 8px;
-                    border-width: 1px;
-                    border-color: Theme.line;
-                    clip: true;
-                    VScroll {
-                        width: 100%;
-                        height: 100%;
+                perf-row := HorizontalLayout {
+                    width: 100%;
+                    height: 100%;
+                    padding: 12px;
+                    spacing: 0;
+                    property <length> avail: self.width - 24px;
+                    resource-column := VScroll {
+                        width: max(180px, min(root.resource-pref, max(180px, avail - 266px)));
+                        horizontal-stretch: 0;
+                        vertical-stretch: 1;
                         VerticalLayout {
-                            width: parent.width;
-                            padding: 16px;
-                            spacing: 8px;
-                            alignment: start;
-                            detail-title := Text {
-                                text: root.detail-title;
-                                font-size: 20px;
-                                font-weight: 600;
-                                color: Theme.text;
-                                wrap: word-wrap;
-                            }
-                            detail-value := Text {
-                                text: root.detail-value;
-                                font-size: 28px;
-                                font-weight: 600;
-                                color: root.detail-kind == 3 ? Theme.unsupported : root.detail-kind == 2 ? Theme.unavailable : Theme.accent;
-                                wrap: word-wrap;
-                            }
-                            Text {
-                                text: root.detail-extra;
-                                font-size: 13px;
-                                color: Theme.text-secondary;
-                                wrap: word-wrap;
-                            }
-                            if root.detail-graph: detail-graph := HistoryGraph {
-                                points: root.detail-points;
-                                axis-high: root.graph-axis-high;
-                                axis-low: root.graph-axis-low;
-                                cursor: root.history-cursor;
-                                picked(index) => {
-                                    root.history-cursor = index;
-                                    root.history-picked(index);
+                            spacing: 6px;
+                            padding-right: 4px;
+                            horizontal-stretch: 1;
+                            HorizontalLayout {
+                                height: 28px;
+                                spacing: 6px;
+                                resource-menu-button := TouchArea {
+                                    width: 52px;
+                                    height: 28px;
+                                    horizontal-stretch: 0;
+                                    accessible-role: button;
+                                    accessible-label: "資源の表示";
+                                    clicked => { root.resource-menu-open = !root.resource-menu-open; }
+                                    Rectangle {
+                                        width: 100%;
+                                        height: 100%;
+                                        border-radius: 6px;
+                                        border-width: 1px;
+                                        border-color: resource-menu-button.has-hover ? Theme.accent : Theme.line;
+                                        background: resource-menu-button.pressed ? Theme.nav-pressed : Theme.card;
+                                        Text {
+                                            width: 100%;
+                                            height: 100%;
+                                            text: "項目";
+                                            font-size: 12px;
+                                            font-weight: 600;
+                                            color: Theme.text;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+                                    }
                                 }
-                            }
-                            Text {
-                                text: "上位プロセス";
-                                font-size: 13px;
-                                font-weight: 600;
-                                color: Theme.text;
-                            }
-                            if root.top-rows.length == 0: Text {
-                                text: "この資源の上位プロセスはありません。";
-                                font-size: 12px;
-                                color: Theme.text-muted;
-                                wrap: word-wrap;
-                            }
-                            for row in root.top-rows: HorizontalLayout {
-                                height: 22px;
-                                spacing: 8px;
                                 Text {
-                                    text: row.name;
-                                    font-size: 13px;
+                                    text: "パフォーマンス";
+                                    font-size: 16px;
+                                    font-weight: 600;
                                     color: Theme.text;
+                                    horizontal-stretch: 1;
+                                    min-width: 0px;
                                     overflow: elide;
                                     vertical-alignment: center;
                                 }
-                                Text {
-                                    text: row.value;
-                                    font-size: 13px;
-                                    horizontal-stretch: 0;
-                                    color: row.kind == 1 ? Theme.text-muted : Theme.text;
-                                    vertical-alignment: center;
+                            }
+                            if root.demo: Text {
+                                text: "DEMO DATA";
+                                font-size: 12px;
+                                font-weight: 700;
+                                color: Theme.unavailable;
+                                height: 18px;
+                                accessible-label: "DEMO DATA";
+                            }
+                            for id in root.resource-order: Rectangle {
+                                height: root.resource-shown[id] ? 78px : 0px;
+                                clip: true;
+                                if root.resource-shown[id] && id == 0: ResourceButton {
+                                    title: "CPU";
+                                    value: root.cpu-summary;
+                                    kind: root.cpu-kind;
+                                    spark: root.cpu-spark;
+                                    active: root.resource == 0;
+                                    clicked => { root.resource = 0; root.resource-requested(0); }
+                                }
+                                if root.resource-shown[id] && id == 1: ResourceButton {
+                                    title: "メモリ";
+                                    value: root.memory-summary;
+                                    kind: root.memory-kind;
+                                    spark: root.memory-spark;
+                                    active: root.resource == 1;
+                                    clicked => { root.resource = 1; root.resource-requested(1); }
+                                }
+                                if root.resource-shown[id] && id == 2: ResourceButton {
+                                    title: "ディスク";
+                                    value: root.disk-summary;
+                                    kind: root.disk-kind;
+                                    spark: root.disk-spark;
+                                    active: root.resource == 2;
+                                    clicked => { root.resource = 2; root.resource-requested(2); }
+                                }
+                                if root.resource-shown[id] && id == 3: ResourceButton {
+                                    title: "ネットワーク";
+                                    value: root.network-summary;
+                                    kind: root.network-kind;
+                                    spark: root.network-spark;
+                                    active: root.resource == 3;
+                                    clicked => { root.resource = 3; root.resource-requested(3); }
+                                }
+                                if root.resource-shown[id] && id == 4: ResourceButton {
+                                    title: "GPU 3D";
+                                    value: root.gpu3d-summary;
+                                    kind: root.gpu3d-kind;
+                                    spark: root.gpu3d-spark;
+                                    active: root.resource == 4;
+                                    clicked => { root.resource = 4; root.resource-requested(4); }
+                                }
+                                if root.resource-shown[id] && id == 5: ResourceButton {
+                                    title: "GPU Encode";
+                                    value: root.gpu-encode-summary;
+                                    kind: root.gpu-encode-kind;
+                                    spark: root.gpu-encode-spark;
+                                    active: root.resource == 5;
+                                    clicked => { root.resource = 5; root.resource-requested(5); }
+                                }
+                                if root.resource-shown[id] && id == 6: ResourceButton {
+                                    title: "GPU Decode";
+                                    value: root.gpu-decode-summary;
+                                    kind: root.gpu-decode-kind;
+                                    spark: root.gpu-decode-spark;
+                                    active: root.resource == 6;
+                                    clicked => { root.resource = 6; root.resource-requested(6); }
+                                }
+                                if root.resource-shown[id] && id == 7: ResourceButton {
+                                    title: "専用VRAM";
+                                    value: root.vram-summary;
+                                    kind: root.vram-kind;
+                                    spark: root.vram-spark;
+                                    active: root.resource == 7;
+                                    clicked => { root.resource = 7; root.resource-requested(7); }
+                                }
+                                if root.resource-shown[id] && id == 8: ResourceButton {
+                                    title: "共有GPUメモリ";
+                                    value: root.shared-summary;
+                                    kind: root.shared-kind;
+                                    spark: root.shared-spark;
+                                    active: root.resource == 8;
+                                    clicked => { root.resource = 8; root.resource-requested(8); }
                                 }
                             }
-                            Text {
-                                text: root.detail-note;
-                                font-size: 13px;
-                                color: Theme.text-secondary;
-                                wrap: word-wrap;
-                            }
-                            Text {
-                                text: "グラフの棒をクリックすると位置だけを覚えます。過去時点の上位プロセスの再計算は、全プロセスの履歴が残っているので後から足せます。表示中も計測は続きます。";
+                            if !root.any-resource(): Text {
+                                text: "表示する資源がありません。";
                                 font-size: 12px;
                                 color: Theme.text-muted;
                                 wrap: word-wrap;
                             }
                         }
+                    }
+                    split-handle := TouchArea {
+                        width: 6px;
+                        horizontal-stretch: 0;
+                        vertical-stretch: 1;
+                        mouse-cursor: ew-resize;
+                        accessible-role: button;
+                        accessible-label: "資源一覧の幅";
+                        property <length> origin: 0px;
+                        property <length> origin-x: 0px;
+                        pointer-event(event) => {
+                            if (event.kind == PointerEventKind.down && event.button == PointerEventButton.left) {
+                                self.origin = root.resource-pref;
+                                self.origin-x = self.absolute-position.x + self.mouse-x;
+                            }
+                        }
+                        moved => {
+                            if (self.pressed) {
+                                root.resource-pref = max(180px, self.origin + (self.absolute-position.x + self.mouse-x) - self.origin-x);
+                                root.resource-resized(root.resource-pref);
+                            }
+                        }
+                        Rectangle {
+                            x: 2px;
+                            y: 8px;
+                            width: 2px;
+                            height: parent.height - 16px;
+                            border-radius: 1px;
+                            background: split-handle.has-hover || split-handle.pressed ? Theme.accent : Theme.grip;
+                        }
+                    }
+                    detail-host := Rectangle {
+                        horizontal-stretch: 1;
+                        vertical-stretch: 1;
+                        min-width: 0px;
+                        min-height: 0px;
+                        HorizontalLayout {
+                            spacing: 2px;
+                            detail-column := Rectangle {
+                                horizontal-stretch: 1;
+                                vertical-stretch: 1;
+                                min-width: 0px;
+                                min-height: 0px;
+                                background: Theme.card;
+                                border-radius: 8px;
+                                border-width: 1px;
+                                border-color: Theme.line;
+                                clip: true;
+                                detail-flick := Flickable {
+                                    width: 100%;
+                                    height: 100%;
+                                    mouse-drag-pan-enabled: false;
+                                    VerticalLayout {
+                                        width: parent.width;
+                                        padding: 16px;
+                                        spacing: 8px;
+                                        alignment: start;
+                                        detail-title := Text {
+                                            text: root.detail-title;
+                                            font-size: 20px;
+                                            font-weight: 600;
+                                            color: Theme.text;
+                                            wrap: word-wrap;
+                                        }
+                                        detail-value := Text {
+                                            text: root.detail-value;
+                                            font-size: 28px;
+                                            font-weight: 600;
+                                            color: root.detail-kind == 3 ? Theme.unsupported : root.detail-kind == 2 ? Theme.unavailable : Theme.accent;
+                                            wrap: word-wrap;
+                                        }
+                                        Text {
+                                            text: root.detail-extra;
+                                            font-size: 13px;
+                                            color: Theme.text-secondary;
+                                            wrap: word-wrap;
+                                        }
+                                        if root.detail-graph: detail-graph := HistoryGraph {
+                                            horizontal-stretch: 1;
+                                            preferred-width: 0px;
+                                            min-width: 0px;
+                                            points: root.detail-points;
+                                            axis-high: root.graph-axis-high;
+                                            axis-low: root.graph-axis-low;
+                                            cursor: root.history-cursor;
+                                            picked(index) => {
+                                                root.history-cursor = index;
+                                                root.history-picked(index);
+                                            }
+                                        }
+                                        Text {
+                                            text: "上位プロセス";
+                                            font-size: 13px;
+                                            font-weight: 600;
+                                            color: Theme.text;
+                                        }
+                                        if root.top-rows.length == 0: Text {
+                                            text: "この資源の上位プロセスはありません。";
+                                            font-size: 12px;
+                                            color: Theme.text-muted;
+                                            wrap: word-wrap;
+                                        }
+                                        for row in root.top-rows: HorizontalLayout {
+                                            height: 22px;
+                                            spacing: 8px;
+                                            Text {
+                                                text: row.name;
+                                                font-size: 13px;
+                                                color: Theme.text;
+                                                overflow: elide;
+                                                vertical-alignment: center;
+                                            }
+                                            Text {
+                                                text: row.value;
+                                                font-size: 13px;
+                                                horizontal-stretch: 0;
+                                                color: row.kind == 1 ? Theme.text-muted : Theme.text;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+                                        Text {
+                                            text: root.detail-note;
+                                            font-size: 13px;
+                                            color: Theme.text-secondary;
+                                            wrap: word-wrap;
+                                        }
+                                        Text {
+                                            text: "グラフの棒をクリックすると位置だけを覚えます。過去時点の上位プロセスの再計算は、全プロセスの履歴が残っているので後から足せます。表示中も計測は続きます。";
+                                            font-size: 12px;
+                                            color: Theme.text-muted;
+                                            wrap: word-wrap;
+                                        }
+                                    }
+                                }
+                            }
+                            WinScrollBar {
+                                horizontal: false;
+                                width: 14px;
+                                horizontal-stretch: 0;
+                                vertical-stretch: 1;
+                                maximum: max(0px, detail-flick.content-height - detail-flick.height);
+                                page-size: detail-flick.height;
+                                value <=> detail-flick.content-y;
+                            }
+                        }
+                    }
+                }
+            }
+            menu-timer := Timer {
+                interval: 32ms;
+                running: root.open-column-menu && root.page == 0;
+                triggered => {
+                    root.column-menu-open = true;
+                    root.open-column-menu = false;
+                }
+            }
+            resource-timer := Timer {
+                interval: 32ms;
+                running: root.open-resource-menu && root.page == 1;
+                triggered => {
+                    root.resource-menu-open = true;
+                    root.open-resource-menu = false;
+                }
+            }
+            if root.column-menu-open && root.page == 0: Rectangle {
+                width: 100%;
+                height: 100%;
+                TouchArea {
+                    width: 100%;
+                    height: 100%;
+                    clicked => { root.column-menu-open = false; }
+                }
+                column-menu := TouchArea {
+                    x: parent.width - 296px;
+                    y: 52px;
+                    width: 280px;
+                    height: 392px;
+                    Rectangle {
+                        width: 100%;
+                        height: 100%;
+                        background: Theme.card;
+                        border-width: 1px;
+                        border-color: Theme.line;
+                        border-radius: 8px;
+                        clip: true;
+                    VerticalLayout {
+                        width: 100%;
+                        padding: 8px;
+                        spacing: 2px;
+                        Text {
+                            text: "列の表示と順序";
+                            width: 100%;
+                            height: 22px;
+                            font-size: 12px;
+                            font-weight: 600;
+                            color: Theme.text;
+                            overflow: elide;
+                            vertical-alignment: center;
+                        }
+                        for id[index] in Columns.order: ArrangeRow {
+                            width: 100%;
+                            label: root.column-label(id);
+                            checked: Columns.shown[id];
+                            locked: id == 0;
+                            can-up: index > 0;
+                            can-down: index + 1 < Columns.order.length;
+                            toggled => { root.column-toggled(id); }
+                            up => { root.column-moved(id, -1); }
+                            down => { root.column-moved(id, 1); }
+                        }
+                    }
+                    }
+                }
+            }
+            if root.resource-menu-open && root.page == 1: Rectangle {
+                width: 100%;
+                height: 100%;
+                TouchArea {
+                    width: 100%;
+                    height: 100%;
+                    clicked => { root.resource-menu-open = false; }
+                }
+                resource-menu := TouchArea {
+                    x: 16px;
+                    y: 52px;
+                    width: 260px;
+                    height: 328px;
+                    Rectangle {
+                        width: 100%;
+                        height: 100%;
+                        background: Theme.card;
+                        border-width: 1px;
+                        border-color: Theme.line;
+                        border-radius: 8px;
+                        clip: true;
+                    VerticalLayout {
+                        width: 100%;
+                        padding: 8px;
+                        spacing: 2px;
+                        Text {
+                            text: "資源の表示と順序";
+                            width: 100%;
+                            height: 22px;
+                            font-size: 12px;
+                            font-weight: 600;
+                            color: Theme.text;
+                            overflow: elide;
+                            vertical-alignment: center;
+                        }
+                        for id[index] in root.resource-order: ArrangeRow {
+                            width: 100%;
+                            label: root.resource-label(id);
+                            checked: root.resource-shown[id];
+                            can-up: index > 0;
+                            can-down: index + 1 < root.resource-order.length;
+                            toggled => { root.resource-toggled(id); }
+                            up => { root.resource-moved(id, -1); }
+                            down => { root.resource-moved(id, 1); }
+                        }
+                    }
                     }
                 }
             }

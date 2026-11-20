@@ -20,6 +20,8 @@ mod sampler;
 mod series;
 mod sort;
 pub mod theme;
+#[cfg(feature = "ui")]
+mod uiprefs;
 
 #[cfg(feature = "ui")]
 mod ui;
