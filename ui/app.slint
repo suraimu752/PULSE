@@ -1,0 +1,657 @@
+import { ListView, ScrollView } from "std-widgets.slint";
+
+export enum CellKind { value, zero, unavailable, unsupported }
+
+export struct ProcessRow {
+    name: string,
+    pid: string,
+    cpu: string,
+    cpu-kind: CellKind,
+    memory: string,
+    memory-kind: CellKind,
+    disk: string,
+    disk-kind: CellKind,
+    network: string,
+    network-kind: CellKind,
+    gpu3d: string,
+    gpu3d-kind: CellKind,
+    gpu-encode: string,
+    gpu-encode-kind: CellKind,
+    gpu-decode: string,
+    gpu-decode-kind: CellKind,
+    vram: string,
+    vram-kind: CellKind,
+    shared: string,
+    shared-kind: CellKind,
+}
+
+global Columns {
+    out property <length> name: 220px;
+    out property <length> pid: 72px;
+    out property <length> cpu: 80px;
+    out property <length> memory: 104px;
+    out property <length> disk: 168px;
+    out property <length> network: 176px;
+    out property <length> gpu3d: 88px;
+    out property <length> gpu-encode: 112px;
+    out property <length> gpu-decode: 112px;
+    out property <length> vram: 112px;
+    out property <length> shared: 128px;
+    out property <length> table: 1372px;
+}
+
+component HeaderCell inherits TouchArea {
+    in property <string> label;
+    in property <length> col-width;
+    in property <bool> active;
+    in property <bool> descending;
+    in property <bool> numeric;
+    width: col-width;
+    height: 34px;
+    property <string> mark: active ? (descending ? " ▼" : " ▲") : "";
+    Text {
+        x: numeric ? 0px : 8px;
+        width: parent.width - 8px;
+        height: 100%;
+        text: label + mark;
+        font-size: 12px;
+        font-weight: 600;
+        color: root.active ? #0f6cbd : #3d3d3d;
+        horizontal-alignment: numeric ? right : left;
+        vertical-alignment: center;
+    }
+}
+
+component ValueCell inherits Rectangle {
+    in property <string> value;
+    in property <CellKind> kind;
+    in property <length> col-width;
+    width: col-width;
+    height: 100%;
+    property <color> fg: kind == CellKind.unsupported ? #6e6e6e : kind == CellKind.unavailable ? #8a5a00 : #1b1b1b;
+    Text {
+        x: 0px;
+        width: parent.width - 8px;
+        height: 100%;
+        text: value;
+        color: fg;
+        font-size: 13px;
+        horizontal-alignment: right;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+}
+
+component ProcessLine inherits Rectangle {
+    in property <ProcessRow> entry;
+    in property <bool> alt;
+    height: 30px;
+    background: alt ? #f6f8fa : #ffffff;
+    HorizontalLayout {
+        Rectangle {
+            width: Columns.name;
+            height: 100%;
+            Text {
+                x: 8px;
+                width: parent.width - 12px;
+                height: 100%;
+                text: entry.name;
+                font-size: 13px;
+                color: #1b1b1b;
+                vertical-alignment: center;
+                horizontal-alignment: left;
+                overflow: elide;
+            }
+        }
+        ValueCell { col-width: Columns.pid; value: entry.pid; kind: CellKind.value; }
+        ValueCell { col-width: Columns.cpu; value: entry.cpu; kind: entry.cpu-kind; }
+        ValueCell { col-width: Columns.memory; value: entry.memory; kind: entry.memory-kind; }
+        ValueCell { col-width: Columns.disk; value: entry.disk; kind: entry.disk-kind; }
+        ValueCell { col-width: Columns.network; value: entry.network; kind: entry.network-kind; }
+        ValueCell { col-width: Columns.gpu3d; value: entry.gpu3d; kind: entry.gpu3d-kind; }
+        ValueCell { col-width: Columns.gpu-encode; value: entry.gpu-encode; kind: entry.gpu-encode-kind; }
+        ValueCell { col-width: Columns.gpu-decode; value: entry.gpu-decode; kind: entry.gpu-decode-kind; }
+        ValueCell { col-width: Columns.vram; value: entry.vram; kind: entry.vram-kind; }
+        ValueCell { col-width: Columns.shared; value: entry.shared; kind: entry.shared-kind; }
+    }
+}
+
+component NavButton inherits TouchArea {
+    in property <string> label;
+    in property <bool> selected;
+    height: 40px;
+    Rectangle {
+        x: 8px;
+        width: parent.width - 16px;
+        height: 100%;
+        border-radius: 8px;
+        background: root.selected ? #e7f2fb : (root.has-hover ? #f2f2f2 : transparent);
+        Rectangle {
+            x: 4px;
+            y: (parent.height - self.height) / 2;
+            width: 3px;
+            height: 18px;
+            border-radius: 2px;
+            background: root.selected ? #0f6cbd : transparent;
+        }
+        Text {
+            x: 18px;
+            width: parent.width - 28px;
+            height: 100%;
+            text: root.label;
+            vertical-alignment: center;
+            font-size: 14px;
+            font-weight: root.selected ? 600 : 400;
+            color: root.selected ? #0f6cbd : #1b1b1b;
+        }
+    }
+}
+
+component DisabledNav inherits Rectangle {
+    in property <string> label;
+    height: 36px;
+    opacity: 0.5;
+    HorizontalLayout {
+        padding-left: 22px;
+        spacing: 8px;
+        Text {
+            text: root.label;
+            vertical-alignment: center;
+            font-size: 14px;
+            color: #1b1b1b;
+        }
+        Text {
+            text: "準備中";
+            vertical-alignment: center;
+            font-size: 11px;
+            color: #6e6e6e;
+        }
+    }
+}
+
+component ResourceButton inherits TouchArea {
+    in property <string> title;
+    in property <string> value;
+    in property <int> kind;
+    in property <bool> active;
+    height: 64px;
+    Rectangle {
+        width: 100%;
+        height: 100%;
+        border-radius: 8px;
+        border-width: 1px;
+        border-color: root.active ? #0f6cbd : #e1e1e1;
+        background: root.active ? #e7f2fb : (root.has-hover ? #f7f7f7 : #ffffff);
+        VerticalLayout {
+            padding-left: 10px;
+            padding-right: 10px;
+            padding-top: 8px;
+            padding-bottom: 8px;
+            alignment: start;
+            Text {
+                text: root.title;
+                font-size: 12px;
+                color: #5d5d5d;
+                overflow: elide;
+            }
+            Text {
+                text: root.value;
+                font-size: 15px;
+                font-weight: 600;
+                color: root.kind == 3 ? #6e6e6e : root.kind == 2 ? #8a5a00 : #1b1b1b;
+                overflow: elide;
+            }
+        }
+    }
+}
+
+component HistoryGraph inherits Rectangle {
+    in property <[float]> points;
+    height: 250px;
+    background: #f4f8fc;
+    border-radius: 8px;
+    border-width: 1px;
+    border-color: #d5e3f0;
+    VerticalLayout {
+        padding: 12px;
+        spacing: 6px;
+        HorizontalLayout {
+            spacing: 8px;
+            vertical-stretch: 1;
+            VerticalLayout {
+                width: 42px;
+                Text { text: "100%"; font-size: 11px; color: #5d5d5d; height: 16px; }
+                Rectangle { vertical-stretch: 1; }
+                Text { text: "0%"; font-size: 11px; color: #5d5d5d; height: 16px; }
+            }
+            Rectangle {
+                horizontal-stretch: 1;
+                vertical-stretch: 1;
+                background: #ffffff;
+                border-width: 1px;
+                border-color: #d0d7de;
+                HorizontalLayout {
+                    spacing: 1px;
+                    padding: 4px;
+                    for pt in root.points: Rectangle {
+                        horizontal-stretch: 1;
+                        vertical-stretch: 1;
+                        Rectangle {
+                            width: 100%;
+                            y: parent.height - self.height;
+                            height: pt < 0 ? 0px : parent.height * (min(max(pt, 0), 100) / 100);
+                            background: #0f6cbd;
+                        }
+                    }
+                }
+            }
+        }
+        HorizontalLayout {
+            height: 18px;
+            Text { text: "60秒前"; font-size: 11px; color: #5d5d5d; }
+            Rectangle { horizontal-stretch: 1; }
+            Text { text: "現在"; font-size: 11px; color: #5d5d5d; }
+        }
+    }
+}
+
+export component AppWindow inherits Window {
+    title: "PULSE";
+    preferred-width: 1280px;
+    preferred-height: 760px;
+    min-width: 880px;
+    min-height: 560px;
+    background: #f3f3f3;
+    default-font-family: "Segoe UI";
+    default-font-size: 13px;
+
+    in-out property <int> page: 0;
+    in-out property <int> resource: 0;
+    in-out property <string> sort-column: "cpu";
+    in-out property <bool> sort-desc: true;
+    in-out property <string> version-text: "PULSE";
+    in-out property <string> status-text: "計測を開始しています…";
+    in-out property <string> warning-text: "";
+    in-out property <bool> warning-visible: false;
+    in-out property <string> detail-title: "CPU";
+    in-out property <string> detail-value: "N/A";
+    in-out property <int> detail-kind: 2;
+    in-out property <string> detail-extra: "";
+    in-out property <string> detail-note: "計測を開始しています。ダミー値は表示しません。";
+    in-out property <bool> detail-graph: false;
+    in-out property <bool> detail-graph-memory: false;
+    in-out property <[ProcessRow]> rows;
+    in-out property <[float]> cpu-history;
+    in-out property <[float]> memory-history;
+
+    in-out property <string> cpu-summary: "N/A";
+    in-out property <int> cpu-kind: 2;
+    in-out property <string> memory-summary: "N/A";
+    in-out property <int> memory-kind: 2;
+    in-out property <string> disk-summary: "未対応";
+    in-out property <int> disk-kind: 3;
+    in-out property <string> network-summary: "未対応";
+    in-out property <int> network-kind: 3;
+    in-out property <string> gpu3d-summary: "未対応";
+    in-out property <int> gpu3d-kind: 3;
+    in-out property <string> gpu-encode-summary: "未対応";
+    in-out property <int> gpu-encode-kind: 3;
+    in-out property <string> gpu-decode-summary: "未対応";
+    in-out property <int> gpu-decode-kind: 3;
+    in-out property <string> vram-summary: "未対応";
+    in-out property <int> vram-kind: 3;
+    in-out property <string> shared-summary: "未対応";
+    in-out property <int> shared-kind: 3;
+
+    callback sort-requested(string);
+    callback resource-requested(int);
+
+    HorizontalLayout {
+        Rectangle {
+            width: 228px;
+            height: 100%;
+            background: #fbfbfb;
+            VerticalLayout {
+                padding: 16px;
+                padding-top: 18px;
+                spacing: 4px;
+                Text {
+                    text: root.version-text;
+                    font-size: 20px;
+                    font-weight: 700;
+                    color: #0f6cbd;
+                }
+                Text {
+                    text: "リソース監視";
+                    font-size: 12px;
+                    color: #5d5d5d;
+                    height: 22px;
+                }
+                Rectangle { height: 8px; }
+                NavButton {
+                    label: "プロセス";
+                    selected: root.page == 0;
+                    clicked => { root.page = 0; }
+                }
+                NavButton {
+                    label: "パフォーマンス";
+                    selected: root.page == 1;
+                    clicked => { root.page = 1; }
+                }
+                Rectangle { height: 8px; }
+                DisabledNav { label: "アプリの履歴"; }
+                DisabledNav { label: "スタートアップ"; }
+                DisabledNav { label: "ユーザー"; }
+                DisabledNav { label: "詳細"; }
+                DisabledNav { label: "サービス"; }
+                Rectangle { vertical-stretch: 1; }
+                Text {
+                    text: "GPL-3.0-only";
+                    font-size: 11px;
+                    color: #6e6e6e;
+                }
+                Text {
+                    text: "通常のユーザー権限で動作";
+                    font-size: 11px;
+                    color: #6e6e6e;
+                }
+            }
+        }
+
+        Rectangle {
+            horizontal-stretch: 1;
+            vertical-stretch: 1;
+            background: #f3f3f3;
+            if root.page == 0: VerticalLayout {
+                width: 100%;
+                height: 100%;
+                padding: 16px;
+                spacing: 8px;
+                Text {
+                    text: "プロセス";
+                    font-size: 22px;
+                    font-weight: 600;
+                    color: #1b1b1b;
+                }
+                Text {
+                    text: root.status-text;
+                    font-size: 12px;
+                    color: #3d3d3d;
+                    wrap: word-wrap;
+                }
+                Text {
+                    text: "N/A は計測不能（権限不足や計測開始直後など）。未対応はこの版では未実装。0 や 0.0% は実測値です。";
+                    font-size: 12px;
+                    color: #5d5d5d;
+                    wrap: word-wrap;
+                }
+                if root.warning-visible: Rectangle {
+                    background: #fff4ce;
+                    border-radius: 6px;
+                    border-width: 1px;
+                    border-color: #e6c200;
+                    height: 36px;
+                    Text {
+                        x: 10px;
+                        width: parent.width - 20px;
+                        height: 100%;
+                        text: root.warning-text;
+                        vertical-alignment: center;
+                        font-size: 12px;
+                        color: #5c4a00;
+                        overflow: elide;
+                    }
+                }
+                Rectangle {
+                    vertical-stretch: 1;
+                    background: #ffffff;
+                    border-radius: 8px;
+                    border-width: 1px;
+                    border-color: #e1e1e1;
+                    flick := Flickable {
+                        width: 100%;
+                        height: 100%;
+                        VerticalLayout {
+                            width: max(flick.width, Columns.table);
+                            height: flick.height;
+                            Rectangle {
+                                height: 34px;
+                                background: #fafafa;
+                                border-color: #e1e1e1;
+                                border-width: 0px;
+                                HorizontalLayout {
+                                    HeaderCell {
+                                        label: "名前";
+                                        col-width: Columns.name;
+                                        active: root.sort-column == "name";
+                                        descending: root.sort-desc;
+                                        numeric: false;
+                                        clicked => { root.sort-requested("name"); }
+                                    }
+                                    HeaderCell {
+                                        label: "PID";
+                                        col-width: Columns.pid;
+                                        active: root.sort-column == "pid";
+                                        descending: root.sort-desc;
+                                        numeric: true;
+                                        clicked => { root.sort-requested("pid"); }
+                                    }
+                                    HeaderCell {
+                                        label: "CPU";
+                                        col-width: Columns.cpu;
+                                        active: root.sort-column == "cpu";
+                                        descending: root.sort-desc;
+                                        numeric: true;
+                                        clicked => { root.sort-requested("cpu"); }
+                                    }
+                                    HeaderCell {
+                                        label: "メモリ";
+                                        col-width: Columns.memory;
+                                        active: root.sort-column == "memory";
+                                        descending: root.sort-desc;
+                                        numeric: true;
+                                        clicked => { root.sort-requested("memory"); }
+                                    }
+                                    HeaderCell {
+                                        label: "ディスク";
+                                        col-width: Columns.disk;
+                                        active: root.sort-column == "disk";
+                                        descending: root.sort-desc;
+                                        numeric: true;
+                                        clicked => { root.sort-requested("disk"); }
+                                    }
+                                    HeaderCell {
+                                        label: "ネットワーク";
+                                        col-width: Columns.network;
+                                        active: root.sort-column == "network";
+                                        descending: root.sort-desc;
+                                        numeric: true;
+                                        clicked => { root.sort-requested("network"); }
+                                    }
+                                    HeaderCell {
+                                        label: "GPU 3D";
+                                        col-width: Columns.gpu3d;
+                                        active: root.sort-column == "gpu3d";
+                                        descending: root.sort-desc;
+                                        numeric: true;
+                                        clicked => { root.sort-requested("gpu3d"); }
+                                    }
+                                    HeaderCell {
+                                        label: "GPU Encode";
+                                        col-width: Columns.gpu-encode;
+                                        active: root.sort-column == "gpu-encode";
+                                        descending: root.sort-desc;
+                                        numeric: true;
+                                        clicked => { root.sort-requested("gpu-encode"); }
+                                    }
+                                    HeaderCell {
+                                        label: "GPU Decode";
+                                        col-width: Columns.gpu-decode;
+                                        active: root.sort-column == "gpu-decode";
+                                        descending: root.sort-desc;
+                                        numeric: true;
+                                        clicked => { root.sort-requested("gpu-decode"); }
+                                    }
+                                    HeaderCell {
+                                        label: "専用VRAM";
+                                        col-width: Columns.vram;
+                                        active: root.sort-column == "vram";
+                                        descending: root.sort-desc;
+                                        numeric: true;
+                                        clicked => { root.sort-requested("vram"); }
+                                    }
+                                    HeaderCell {
+                                        label: "共有GPU";
+                                        col-width: Columns.shared;
+                                        active: root.sort-column == "shared";
+                                        descending: root.sort-desc;
+                                        numeric: true;
+                                        clicked => { root.sort-requested("shared"); }
+                                    }
+                                }
+                            }
+                            ListView {
+                                vertical-stretch: 1;
+                                for entry[idx] in root.rows: ProcessLine {
+                                    entry: entry;
+                                    alt: mod(idx, 2) != 0;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if root.page == 1: HorizontalLayout {
+                width: 100%;
+                height: 100%;
+                padding: 16px;
+                spacing: 16px;
+                ScrollView {
+                    width: 250px;
+                    VerticalLayout {
+                        spacing: 8px;
+                        padding-right: 4px;
+                        Text {
+                            text: "パフォーマンス";
+                            font-size: 22px;
+                            font-weight: 600;
+                            height: 32px;
+                        }
+                        ResourceButton {
+                            title: "CPU";
+                            value: root.cpu-summary;
+                            kind: root.cpu-kind;
+                            active: root.resource == 0;
+                            clicked => { root.resource = 0; root.resource-requested(0); }
+                        }
+                        ResourceButton {
+                            title: "メモリ";
+                            value: root.memory-summary;
+                            kind: root.memory-kind;
+                            active: root.resource == 1;
+                            clicked => { root.resource = 1; root.resource-requested(1); }
+                        }
+                        ResourceButton {
+                            title: "ディスク";
+                            value: root.disk-summary;
+                            kind: root.disk-kind;
+                            active: root.resource == 2;
+                            clicked => { root.resource = 2; root.resource-requested(2); }
+                        }
+                        ResourceButton {
+                            title: "ネットワーク";
+                            value: root.network-summary;
+                            kind: root.network-kind;
+                            active: root.resource == 3;
+                            clicked => { root.resource = 3; root.resource-requested(3); }
+                        }
+                        ResourceButton {
+                            title: "GPU 3D";
+                            value: root.gpu3d-summary;
+                            kind: root.gpu3d-kind;
+                            active: root.resource == 4;
+                            clicked => { root.resource = 4; root.resource-requested(4); }
+                        }
+                        ResourceButton {
+                            title: "GPU Encode";
+                            value: root.gpu-encode-summary;
+                            kind: root.gpu-encode-kind;
+                            active: root.resource == 5;
+                            clicked => { root.resource = 5; root.resource-requested(5); }
+                        }
+                        ResourceButton {
+                            title: "GPU Decode";
+                            value: root.gpu-decode-summary;
+                            kind: root.gpu-decode-kind;
+                            active: root.resource == 6;
+                            clicked => { root.resource = 6; root.resource-requested(6); }
+                        }
+                        ResourceButton {
+                            title: "専用VRAM";
+                            value: root.vram-summary;
+                            kind: root.vram-kind;
+                            active: root.resource == 7;
+                            clicked => { root.resource = 7; root.resource-requested(7); }
+                        }
+                        ResourceButton {
+                            title: "共有GPUメモリ";
+                            value: root.shared-summary;
+                            kind: root.shared-kind;
+                            active: root.resource == 8;
+                            clicked => { root.resource = 8; root.resource-requested(8); }
+                        }
+                    }
+                }
+                Rectangle {
+                    horizontal-stretch: 1;
+                    vertical-stretch: 1;
+                    background: #ffffff;
+                    border-radius: 8px;
+                    border-width: 1px;
+                    border-color: #e1e1e1;
+                    VerticalLayout {
+                        padding: 20px;
+                        spacing: 8px;
+                        alignment: start;
+                        Text {
+                            text: root.detail-title;
+                            font-size: 20px;
+                            font-weight: 600;
+                            color: #1b1b1b;
+                        }
+                        Text {
+                            text: root.detail-value;
+                            font-size: 32px;
+                            font-weight: 600;
+                            color: root.detail-kind == 3 ? #6e6e6e : root.detail-kind == 2 ? #8a5a00 : #0f6cbd;
+                        }
+                        Text {
+                            text: root.detail-extra;
+                            font-size: 13px;
+                            color: #3d3d3d;
+                            wrap: word-wrap;
+                        }
+                        if root.detail-graph && !root.detail-graph-memory: HistoryGraph {
+                            points: root.cpu-history;
+                        }
+                        if root.detail-graph && root.detail-graph-memory: HistoryGraph {
+                            points: root.memory-history;
+                        }
+                        Text {
+                            text: root.detail-note;
+                            font-size: 13px;
+                            color: #3d3d3d;
+                            wrap: word-wrap;
+                        }
+                        Text {
+                            text: "履歴のクリック選択と過去時点の上位プロセスは今後のフェーズで追加します。表示中も計測は続きます。";
+                            font-size: 12px;
+                            color: #5d5d5d;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

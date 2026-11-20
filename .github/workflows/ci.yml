@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: fmt / clippy / test (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Install Slint system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config \
+            libx11-dev libx11-xcb-dev libxcb1-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev \
+            libwayland-dev libegl1-mesa-dev libgles2-mesa-dev \
+            libfontconfig1-dev
+      - name: cargo fmt
+        run: cargo fmt --all -- --check
+      - name: cargo clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: cargo test
+        run: cargo test --all-targets --all-features
+
+  windows:
+    name: fmt / clippy / test / build (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: cargo fmt
+        run: cargo fmt --all -- --check
+      - name: cargo clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: cargo test
+        run: cargo test --all-targets --all-features
+      - name: cargo build (release)
+        run: cargo build --release --locked
+      - name: Show PULSE.exe
+        shell: pwsh
+        run: Get-Item target/release/PULSE.exe | Format-List FullName, Length
+      - name: Upload PULSE.exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: PULSE-windows-x64
+          path: target/release/PULSE.exe
+          if-no-files-found: error

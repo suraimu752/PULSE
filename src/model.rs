@@ -1,0 +1,200 @@
+//! Shared data types. Collectors fill [`RawSample`]. The aggregator turns two
+//! raw samples into a [`Snapshot`] the UI and the history buffer can store.
+
+use std::time::{Instant, SystemTime};
+
+use crate::metric::MetricValue;
+
+/// Identity that survives PID reuse.
+///
+/// `creation_time_100ns` is the process creation FILETIME (100 ns since 1601).
+/// `0` means the creation time could not be read; that key is weaker.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ProcessKey {
+    pub pid: u32,
+    pub creation_time_100ns: u64,
+}
+
+/// One process as read from the operating system, before rates are computed.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RawProcess {
+    pub pid: u32,
+    pub parent_pid: u32,
+    pub name: String,
+    pub creation_time_100ns: Option<u64>,
+    /// Sum of kernel and user time, in 100 ns units. Cumulative.
+    pub cpu_time_100ns: MetricValue<u64>,
+    /// Private working set, in bytes. A gauge.
+    pub memory_bytes: MetricValue<u64>,
+    /// Cumulative counters. The aggregator turns them into bytes per second.
+    pub disk_read_bytes: MetricValue<u64>,
+    pub disk_write_bytes: MetricValue<u64>,
+    pub net_send_bytes: MetricValue<u64>,
+    pub net_recv_bytes: MetricValue<u64>,
+    /// Interval percentages already normalized by a future GPU collector.
+    /// Not summed across engines here.
+    pub gpu_3d_percent: MetricValue<f64>,
+    pub gpu_encode_percent: MetricValue<f64>,
+    pub gpu_decode_percent: MetricValue<f64>,
+    pub vram_dedicated_bytes: MetricValue<u64>,
+    pub vram_shared_bytes: MetricValue<u64>,
+}
+
+impl RawProcess {
+    /// Disk, network, GPU, and VRAM start as [`MetricValue::Unsupported`].
+    /// CPU and memory start as [`MetricValue::Unavailable`] until a read succeeds.
+    pub fn new(pid: u32, parent_pid: u32, name: impl Into<String>) -> Self {
+        Self {
+            pid,
+            parent_pid,
+            name: name.into(),
+            creation_time_100ns: None,
+            cpu_time_100ns: MetricValue::Unavailable,
+            memory_bytes: MetricValue::Unavailable,
+            disk_read_bytes: MetricValue::Unsupported,
+            disk_write_bytes: MetricValue::Unsupported,
+            net_send_bytes: MetricValue::Unsupported,
+            net_recv_bytes: MetricValue::Unsupported,
+            gpu_3d_percent: MetricValue::Unsupported,
+            gpu_encode_percent: MetricValue::Unsupported,
+            gpu_decode_percent: MetricValue::Unsupported,
+            vram_dedicated_bytes: MetricValue::Unsupported,
+            vram_shared_bytes: MetricValue::Unsupported,
+        }
+    }
+
+    pub fn key(&self) -> ProcessKey {
+        ProcessKey {
+            pid: self.pid,
+            creation_time_100ns: self.creation_time_100ns.unwrap_or(0),
+        }
+    }
+}
+
+/// One polling pass, still in counter form where a rate needs a previous sample.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RawSample {
+    pub taken_at: Instant,
+    pub wall_time: SystemTime,
+    pub logical_processors: MetricValue<u32>,
+    /// Busy processor time across all logical processors, 100 ns units. Cumulative.
+    pub system_busy_100ns: MetricValue<u64>,
+    /// Kernel + user time including idle, 100 ns units. Cumulative.
+    /// This is the capacity denominator for CPU percents.
+    pub system_total_100ns: MetricValue<u64>,
+    pub memory_total_bytes: MetricValue<u64>,
+    pub memory_available_bytes: MetricValue<u64>,
+    /// System-wide rates and gauges copied through by the aggregator.
+    /// Physical disk throughput is not the sum of per-process I/O, so these
+    /// are separate from the per-process counters.
+    pub system_disk_read_bps: MetricValue<f64>,
+    pub system_disk_write_bps: MetricValue<f64>,
+    pub system_net_send_bps: MetricValue<f64>,
+    pub system_net_recv_bps: MetricValue<f64>,
+    pub system_gpu_3d_percent: MetricValue<f64>,
+    pub system_gpu_encode_percent: MetricValue<f64>,
+    pub system_gpu_decode_percent: MetricValue<f64>,
+    pub system_vram_dedicated_bytes: MetricValue<u64>,
+    pub system_vram_shared_bytes: MetricValue<u64>,
+    pub processes: Vec<RawProcess>,
+    pub warning: Option<String>,
+}
+
+impl RawSample {
+    pub fn empty(taken_at: Instant, wall_time: SystemTime) -> Self {
+        Self {
+            taken_at,
+            wall_time,
+            logical_processors: MetricValue::Unsupported,
+            system_busy_100ns: MetricValue::Unsupported,
+            system_total_100ns: MetricValue::Unsupported,
+            memory_total_bytes: MetricValue::Unsupported,
+            memory_available_bytes: MetricValue::Unsupported,
+            system_disk_read_bps: MetricValue::Unsupported,
+            system_disk_write_bps: MetricValue::Unsupported,
+            system_net_send_bps: MetricValue::Unsupported,
+            system_net_recv_bps: MetricValue::Unsupported,
+            system_gpu_3d_percent: MetricValue::Unsupported,
+            system_gpu_encode_percent: MetricValue::Unsupported,
+            system_gpu_decode_percent: MetricValue::Unsupported,
+            system_vram_dedicated_bytes: MetricValue::Unsupported,
+            system_vram_shared_bytes: MetricValue::Unsupported,
+            processes: Vec::new(),
+            warning: None,
+        }
+    }
+}
+
+/// One process after rates have been computed for a single interval.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ProcessSnapshot {
+    pub key: ProcessKey,
+    pub parent_pid: u32,
+    pub name: String,
+    pub cpu_percent: MetricValue<f64>,
+    pub memory_bytes: MetricValue<u64>,
+    pub disk_read_bps: MetricValue<f64>,
+    pub disk_write_bps: MetricValue<f64>,
+    pub net_send_bps: MetricValue<f64>,
+    pub net_recv_bps: MetricValue<f64>,
+    pub gpu_3d_percent: MetricValue<f64>,
+    pub gpu_encode_percent: MetricValue<f64>,
+    pub gpu_decode_percent: MetricValue<f64>,
+    pub vram_dedicated_bytes: MetricValue<u64>,
+    pub vram_shared_bytes: MetricValue<u64>,
+}
+
+/// Aggregated view of the machine at one publish.
+///
+/// The process list is the full set, not a top-N. Ranking is a display concern.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Snapshot {
+    pub sequence: u64,
+    pub taken_at: SystemTime,
+    pub interval: Option<std::time::Duration>,
+    pub logical_processors: MetricValue<u32>,
+    pub cpu_percent: MetricValue<f64>,
+    pub memory_used_bytes: MetricValue<u64>,
+    pub memory_total_bytes: MetricValue<u64>,
+    pub disk_read_bps: MetricValue<f64>,
+    pub disk_write_bps: MetricValue<f64>,
+    pub net_send_bps: MetricValue<f64>,
+    pub net_recv_bps: MetricValue<f64>,
+    pub gpu_3d_percent: MetricValue<f64>,
+    pub gpu_encode_percent: MetricValue<f64>,
+    pub gpu_decode_percent: MetricValue<f64>,
+    pub vram_dedicated_bytes: MetricValue<u64>,
+    pub vram_shared_bytes: MetricValue<u64>,
+    pub processes: Vec<ProcessSnapshot>,
+    pub warning: Option<String>,
+}
+
+/// Performance-tab selection. Values match the order of the UI buttons.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResourceId {
+    Cpu = 0,
+    Memory = 1,
+    Disk = 2,
+    Network = 3,
+    Gpu3d = 4,
+    GpuEncode = 5,
+    GpuDecode = 6,
+    VramDedicated = 7,
+    VramShared = 8,
+}
+
+impl ResourceId {
+    pub fn from_index(index: i32) -> Self {
+        match index {
+            0 => Self::Cpu,
+            1 => Self::Memory,
+            2 => Self::Disk,
+            3 => Self::Network,
+            4 => Self::Gpu3d,
+            5 => Self::GpuEncode,
+            6 => Self::GpuDecode,
+            7 => Self::VramDedicated,
+            _ => Self::VramShared,
+        }
+    }
+}
