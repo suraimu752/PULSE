@@ -32,7 +32,7 @@ UI の設計メモとして、次のスキル一式を `.cursor/skills/` に同�
 | taste-skill | https://github.com/Leonxlnx/taste-skill （`skills/taste-skill/`） | `f6b76575f949707b4e3c37cd86cb44b0b98643e8` | MIT |
 | emil-design-eng | https://github.com/emilkowalski/skills （`skills/emil-design-eng/`） | `64eb3deb9a5fbfa041faf783e0bc3fd635872e9c` | MIT |
 
-Apache-2.0 と MIT は GPL-3.0 と組み合わせられる。taste-skill のフォルダには、その説明文が Wikimedia Commons / Unsplash の CC0・CC-BY・CC-BY-SA としている参考写真が含まれる。PULSE の画面には使っていない。
+Apache-2.0 と MIT は GPL-3.0 と組み合わせられる。taste-skill の上流フォルダには、その説明文が Wikimedia Commons / Unsplash の CC0・CC-BY・CC-BY-SA としている参考写真がある。画面にもスキルの文章にも使っていないため、画像ファイルは同梱していない。残しているのは `SKILL.md`、`LICENSE`、および写真以外の文章とスクリプトである。MIT の表示義務は同梱の `LICENSE` で満たす。ライセンス条件自体は変えていない。
 
 ## アイコン
 
