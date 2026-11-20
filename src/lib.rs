@@ -6,6 +6,7 @@
 mod aggregate;
 mod collector;
 mod config;
+mod devices;
 mod format;
 mod gpuagg;
 mod history;
