@@ -9,10 +9,11 @@ use std::time::Instant;
 use crate::aggregate::aggregate;
 use crate::collector::{MetricEnricher, SystemProbe};
 use crate::config::{history_capacity, CPU_SAMPLE_INTERVAL, SHUTDOWN_POLL};
-use crate::history::{align_right, RingBuffer};
+use crate::history::RingBuffer;
 use crate::metric::MetricValue;
 use crate::model::Snapshot;
 use crate::platform;
+use crate::series::{chart_history, ChartHistory};
 
 /// What the UI thread is allowed to read.
 #[derive(Clone, Debug)]
@@ -21,9 +22,11 @@ pub struct PublishedSample {
     /// Oldest to newest, right-aligned to the 60-second window. `None` is a gap, not zero.
     pub cpu_history: Vec<Option<f64>>,
     pub memory_history: Vec<Option<f64>>,
+    pub charts: ChartHistory,
     pub self_cpu: MetricValue<f64>,
     pub self_memory: MetricValue<u64>,
     pub updated_text: String,
+    pub demo: bool,
 }
 
 #[derive(Clone)]
@@ -60,6 +63,7 @@ pub struct SamplerCore {
     previous: Option<crate::model::RawSample>,
     history: RingBuffer<Arc<Snapshot>>,
     sequence: u64,
+    demo: bool,
 }
 
 impl SamplerCore {
@@ -70,6 +74,7 @@ impl SamplerCore {
             previous: None,
             history: RingBuffer::with_capacity(history_capacity()),
             sequence: 0,
+            demo: false,
         }
     }
 
@@ -85,7 +90,12 @@ impl SamplerCore {
         let updated_text = platform::format_local_hms(snapshot.taken_at);
         let snapshot = Arc::new(snapshot);
         self.history.push(Arc::clone(&snapshot));
-        let published = publish(&self.history, Arc::clone(&snapshot), updated_text);
+        let published = publish(
+            &self.history,
+            Arc::clone(&snapshot),
+            updated_text,
+            self.demo,
+        );
         self.previous = Some(raw);
         published
     }
@@ -98,14 +108,18 @@ pub struct SamplerHandle {
 }
 
 impl SamplerHandle {
-    pub fn start() -> Result<Self, String> {
+    pub fn start(demo: Option<&str>) -> Result<Self, String> {
         let shared = SharedLatest::new();
         let stop = Arc::new(AtomicBool::new(false));
+        let (mut core, warmup) = build_core(demo)?;
+        for _ in 0..warmup {
+            shared.publish(core.tick());
+        }
         let shared_thread = shared.clone();
         let stop_thread = Arc::clone(&stop);
         let join = thread::Builder::new()
             .name("pulse-sampler".to_string())
-            .spawn(move || sampler_loop(shared_thread, stop_thread))
+            .spawn(move || sampler_loop(core, shared_thread, stop_thread))
             .map_err(|err| format!("計測スレッドを開始できませんでした: {err}"))?;
         Ok(Self {
             shared,
@@ -128,8 +142,31 @@ impl Drop for SamplerHandle {
     }
 }
 
-fn sampler_loop(shared: SharedLatest, stop: Arc<AtomicBool>) {
-    let mut core = SamplerCore::new(platform::make_probe(), platform::make_enrichers());
+fn build_core(demo: Option<&str>) -> Result<(SamplerCore, u32), String> {
+    #[cfg(feature = "mock")]
+    if let Some(name) = demo {
+        let scenario = crate::mock::Scenario::parse(name)
+            .ok_or_else(|| format!("未知のデモシナリオです: {name}"))?;
+        let mut core =
+            SamplerCore::new(Box::new(crate::mock::MockProbe::new(scenario)), Vec::new());
+        core.demo = true;
+        let warmup = u32::try_from(history_capacity()).unwrap_or(120);
+        return Ok((core, warmup));
+    }
+    #[cfg(not(feature = "mock"))]
+    if demo.is_some() {
+        return Err(
+            "このビルドに DEMO DATA は入っていません。--features mock で起動してください。"
+                .to_string(),
+        );
+    }
+    Ok((
+        SamplerCore::new(platform::make_probe(), platform::make_enrichers()),
+        0,
+    ))
+}
+
+fn sampler_loop(mut core: SamplerCore, shared: SharedLatest, stop: Arc<AtomicBool>) {
     while !stop.load(Ordering::SeqCst) {
         let started = Instant::now();
         let published = core.tick();
@@ -154,32 +191,22 @@ fn publish(
     history: &RingBuffer<Arc<Snapshot>>,
     snapshot: Arc<Snapshot>,
     updated_text: String,
+    demo: bool,
 ) -> PublishedSample {
-    let cpu_raw: Vec<Option<f64>> = history
-        .iter()
-        .map(|sample| sample.cpu_percent.as_option())
-        .collect();
-    let memory_raw: Vec<Option<f64>> = history
-        .iter()
-        .map(|sample| memory_percent(sample))
-        .collect();
+    let charts = chart_history(
+        history.iter().map(|sample| sample.as_ref()),
+        history.capacity(),
+    );
     let (self_cpu, self_memory) = self_metrics(&snapshot);
     PublishedSample {
-        cpu_history: align_right(&cpu_raw, history.capacity(), None),
-        memory_history: align_right(&memory_raw, history.capacity(), None),
+        cpu_history: charts.cpu.clone(),
+        memory_history: charts.memory.clone(),
+        charts,
         self_cpu,
         self_memory,
         updated_text,
+        demo,
         snapshot,
-    }
-}
-
-fn memory_percent(snapshot: &Snapshot) -> Option<f64> {
-    match (snapshot.memory_used_bytes, snapshot.memory_total_bytes) {
-        (MetricValue::Value(used), MetricValue::Value(total)) if total > 0 => {
-            Some((used as f64) / (total as f64) * 100.0)
-        }
-        _ => None,
     }
 }
 

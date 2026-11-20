@@ -96,6 +96,13 @@ pub struct RawSample {
     pub system_gpu_decode_percent: MetricValue<f64>,
     pub system_vram_dedicated_bytes: MetricValue<u64>,
     pub system_vram_shared_bytes: MetricValue<u64>,
+    /// Physical disks. Not the sum of per-process I/O.
+    pub disks: Vec<NamedRate>,
+    /// Network adapters. Not per-process attribution.
+    pub adapters: Vec<NamedRate>,
+    pub gpus: Vec<GpuAdapter>,
+    pub process_net: ProcessNetMode,
+    pub gpu_presence: GpuPresence,
     pub processes: Vec<RawProcess>,
     pub warning: Option<String>,
 }
@@ -119,6 +126,11 @@ impl RawSample {
             system_gpu_decode_percent: MetricValue::Unsupported,
             system_vram_dedicated_bytes: MetricValue::Unsupported,
             system_vram_shared_bytes: MetricValue::Unsupported,
+            disks: Vec::new(),
+            adapters: Vec::new(),
+            gpus: Vec::new(),
+            process_net: ProcessNetMode::Attributed,
+            gpu_presence: GpuPresence::Unknown,
             processes: Vec::new(),
             warning: None,
         }
@@ -165,8 +177,57 @@ pub struct Snapshot {
     pub gpu_decode_percent: MetricValue<f64>,
     pub vram_dedicated_bytes: MetricValue<u64>,
     pub vram_shared_bytes: MetricValue<u64>,
+    pub disks: Vec<NamedRate>,
+    pub adapters: Vec<NamedRate>,
+    pub gpus: Vec<GpuAdapter>,
+    pub process_net: ProcessNetMode,
+    pub gpu_presence: GpuPresence,
     pub processes: Vec<ProcessSnapshot>,
     pub warning: Option<String>,
+}
+
+/// One physical disk or one network adapter. These rates are not per-process.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NamedRate {
+    pub name: String,
+    pub read_bps: MetricValue<f64>,
+    pub write_bps: MetricValue<f64>,
+}
+
+/// One GPU adapter. Utilizations are already folded with a max, never a sum.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GpuAdapter {
+    pub luid: u64,
+    pub name: String,
+    pub util_3d: MetricValue<f64>,
+    pub util_encode: MetricValue<f64>,
+    pub util_decode: MetricValue<f64>,
+    pub dedicated_bytes: MetricValue<u64>,
+    pub shared_bytes: MetricValue<u64>,
+}
+
+/// How per-process network bytes should be read.
+///
+/// Adapter totals can exist while per-process attribution cannot. `NeedsAdmin`
+/// means the process cells are not a measured zero; the UI says so.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum ProcessNetMode {
+    /// Per-process counters are meaningful (including Unavailable for one process).
+    #[default]
+    Attributed,
+    /// This build does not attribute flows to a PID without elevation.
+    NeedsAdmin,
+}
+
+/// Whether a GPU collector found any adapter.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum GpuPresence {
+    /// No GPU collector has run.
+    #[default]
+    Unknown,
+    /// The collector ran and found no engine.
+    None,
+    Present,
 }
 
 /// Performance-tab selection. Values match the order of the UI buttons.

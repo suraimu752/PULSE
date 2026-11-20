@@ -46,6 +46,12 @@ export global Theme {
 
 export enum CellKind { value, zero, unavailable, unsupported }
 
+export struct TopRow {
+    name: string,
+    value: string,
+    kind: int,
+}
+
 export struct ProcessRow {
     name: string,
     pid: string,
@@ -69,7 +75,7 @@ export struct ProcessRow {
     shared-kind: CellKind,
 }
 
-global Columns {
+export global Columns {
     in-out property <length> name: 220px;
     in-out property <length> pid: 72px;
     in-out property <length> cpu: 80px;
@@ -302,10 +308,14 @@ component WinScrollBar inherits Rectangle {
     }
 }
 
-// Vertical scroller with a visible bar. The inner layout keeps its own height
-// so a short viewport can scroll without instantiating extra copies of the content.
+// Vertical scroller. The viewport is the height the parent layout assigns.
+// Content keeps its own height, so a short window scrolls instead of growing the page.
 component VScroll inherits Rectangle {
     property <length> gutter: 14px;
+    vertical-stretch: 1;
+    min-height: 0px;
+    min-width: 0px;
+    clip: true;
 
     flick := Flickable {
         x: 0px;
@@ -313,7 +323,10 @@ component VScroll inherits Rectangle {
         width: parent.width - root.gutter;
         height: parent.height;
         mouse-drag-pan-enabled: false;
-        @children
+        viewport := VerticalLayout {
+            width: flick.width;
+            @children
+        }
     }
 
     WinScrollBar {
@@ -443,12 +456,39 @@ component NavEntry inherits Rectangle {
     }
 }
 
+component Sparkline inherits Rectangle {
+    in property <[float]> points;
+    height: 18px;
+    background: Theme.graph-plot;
+    border-radius: 3px;
+    clip: true;
+    HorizontalLayout {
+        width: 100%;
+        height: 100%;
+        for value in root.points: Rectangle {
+            horizontal-stretch: 1;
+            min-width: 0px;
+            preferred-width: 0px;
+            vertical-stretch: 1;
+            Rectangle {
+                y: parent.height - self.height;
+                width: 100%;
+                height: value < 0 ? 0px : parent.height * min(max(value, 0), 100) / 100;
+                background: Theme.graph-bar;
+            }
+        }
+    }
+}
+
 component ResourceButton inherits TouchArea {
     in property <string> title;
     in property <string> value;
     in property <int> kind;
     in property <bool> active;
-    height: 64px;
+    in property <[float]> spark;
+    height: 78px;
+    accessible-role: button;
+    accessible-label: title;
     Rectangle {
         width: 100%;
         height: 100%;
@@ -459,62 +499,96 @@ component ResourceButton inherits TouchArea {
         VerticalLayout {
             padding-left: 10px;
             padding-right: 10px;
-            padding-top: 8px;
-            padding-bottom: 8px;
+            padding-top: 6px;
+            padding-bottom: 6px;
+            spacing: 2px;
             alignment: start;
             Text {
                 text: root.title;
                 font-size: 12px;
                 color: Theme.text-muted;
                 overflow: elide;
+                height: 16px;
             }
             Text {
                 text: root.value;
-                font-size: 15px;
+                font-size: 14px;
                 font-weight: 600;
                 color: root.kind == 3 ? Theme.unsupported : root.kind == 2 ? Theme.unavailable : Theme.text;
                 overflow: elide;
+                height: 20px;
             }
+            Sparkline { points: root.spark; }
         }
     }
 }
 
 component HistoryGraph inherits Rectangle {
     in property <[float]> points;
-    height: 250px;
+    in property <string> axis-high: "100%";
+    in property <string> axis-low: "0";
+    in property <int> cursor: -1;
+    callback picked(int);
+    height: 220px;
+    min-width: 0px;
     background: Theme.graph-bg;
     border-radius: 8px;
     border-width: 1px;
     border-color: Theme.graph-border;
+    clip: true;
     VerticalLayout {
         padding: 12px;
         spacing: 6px;
         HorizontalLayout {
             spacing: 8px;
             vertical-stretch: 1;
+            min-height: 0px;
             VerticalLayout {
-                width: 42px;
-                Text { text: "100%"; font-size: 11px; color: Theme.text-muted; height: 16px; }
+                width: 64px;
+                Text {
+                    text: root.axis-high;
+                    font-size: 11px;
+                    color: Theme.text-muted;
+                    height: 16px;
+                    overflow: elide;
+                }
                 Rectangle { vertical-stretch: 1; }
-                Text { text: "0%"; font-size: 11px; color: Theme.text-muted; height: 16px; }
+                Text {
+                    text: root.axis-low;
+                    font-size: 11px;
+                    color: Theme.text-muted;
+                    height: 16px;
+                    overflow: elide;
+                }
             }
-            Rectangle {
+            plot := Rectangle {
                 horizontal-stretch: 1;
                 vertical-stretch: 1;
+                min-width: 0px;
+                min-height: 0px;
                 background: Theme.graph-plot;
                 border-width: 1px;
                 border-color: Theme.graph-border;
+                clip: true;
                 HorizontalLayout {
-                    spacing: 1px;
+                    x: 0px;
+                    y: 0px;
+                    width: 100%;
+                    height: 100%;
                     padding: 4px;
-                    for pt in root.points: Rectangle {
+                    for value[index] in root.points: Rectangle {
                         horizontal-stretch: 1;
+                        min-width: 0px;
+                        preferred-width: 0px;
                         vertical-stretch: 1;
-                        Rectangle {
-                            width: 100%;
-                            y: parent.height - self.height;
-                            height: pt < 0 ? 0px : parent.height * (min(max(pt, 0), 100) / 100);
-                            background: Theme.graph-bar;
+                        bar-touch := TouchArea {
+                            clicked => { root.picked(index); }
+                            Rectangle {
+                                y: parent.height - self.height;
+                                width: 100%;
+                                height: value < 0 ? 0px : parent.height * min(max(value, 0), 100) / 100;
+                                background: root.cursor == index ? Theme.accent-text : Theme.graph-bar;
+                            }
                         }
                     }
                 }
@@ -615,8 +689,8 @@ component ThemeSwitch inherits Rectangle {
 export component AppWindow inherits Window {
     title: "PULSE";
     preferred-width: 1280px;
-    preferred-height: 760px;
-    min-width: 880px;
+    preferred-height: 720px;
+    min-width: 800px;
     min-height: 560px;
     background: Theme.canvas;
     default-font-family: "Segoe UI";
@@ -637,10 +711,22 @@ export component AppWindow inherits Window {
     in-out property <string> detail-extra: "";
     in-out property <string> detail-note: "計測を開始しています。ダミー値は表示しません。";
     in-out property <bool> detail-graph: false;
-    in-out property <bool> detail-graph-memory: false;
+    in-out property <bool> demo: false;
+    in-out property <int> history-cursor: -1;
+    in-out property <string> graph-axis-high: "100%";
+    in-out property <string> graph-axis-low: "0";
     in-out property <[ProcessRow]> rows;
-    in-out property <[float]> cpu-history;
-    in-out property <[float]> memory-history;
+    in-out property <[TopRow]> top-rows;
+    in-out property <[float]> detail-points;
+    in-out property <[float]> cpu-spark;
+    in-out property <[float]> memory-spark;
+    in-out property <[float]> disk-spark;
+    in-out property <[float]> network-spark;
+    in-out property <[float]> gpu3d-spark;
+    in-out property <[float]> gpu-encode-spark;
+    in-out property <[float]> gpu-decode-spark;
+    in-out property <[float]> vram-spark;
+    in-out property <[float]> shared-spark;
 
     in-out property <string> cpu-summary: "N/A";
     in-out property <int> cpu-kind: 2;
@@ -663,6 +749,10 @@ export component AppWindow inherits Window {
 
     callback sort-requested(string);
     callback resource-requested(int);
+    // Phase 3 can recompute the top list from this index. The live values stay current.
+    callback history-picked(int);
+
+    out property <length> table-width: Columns.table;
 
     HorizontalLayout {
         Rectangle {
@@ -796,17 +886,32 @@ export component AppWindow inherits Window {
         Rectangle {
             horizontal-stretch: 1;
             vertical-stretch: 1;
+            min-width: 0px;
+            min-height: 0px;
             background: Theme.canvas;
+            clip: true;
             if root.page == 0: VerticalLayout {
                 width: 100%;
                 height: 100%;
                 padding: 16px;
                 spacing: 8px;
-                Text {
-                    text: "プロセス";
-                    font-size: 22px;
-                    font-weight: 600;
-                    color: Theme.text;
+                HorizontalLayout {
+                    spacing: 12px;
+                    Text {
+                        text: "プロセス";
+                        font-size: 22px;
+                        font-weight: 600;
+                        color: Theme.text;
+                        horizontal-stretch: 0;
+                    }
+                    if root.demo: Text {
+                        text: "DEMO DATA";
+                        font-size: 12px;
+                        font-weight: 700;
+                        color: Theme.unavailable;
+                        vertical-alignment: center;
+                        accessible-label: "DEMO DATA";
+                    }
                 }
                 Text {
                     text: root.status-text;
@@ -1048,28 +1153,40 @@ export component AppWindow inherits Window {
                     }
                 }
             }
-            if root.page == 1: HorizontalLayout {
+            if root.page == 1: perf-page := HorizontalLayout {
                 width: 100%;
                 height: 100%;
-                padding: 16px;
-                spacing: 16px;
-                VScroll {
-                    width: 264px;
+                padding: 12px;
+                spacing: 12px;
+                resource-column := VScroll {
+                    width: 220px;
+                    horizontal-stretch: 0;
+                    vertical-stretch: 1;
                     VerticalLayout {
                         width: parent.width;
-                        height: max(self.min-height, parent.height);
-                        spacing: 8px;
-                        padding-right: 4px;
+                        spacing: 6px;
+                        padding-right: 2px;
                         Text {
                             text: "パフォーマンス";
-                            font-size: 22px;
+                            font-size: 20px;
                             font-weight: 600;
-                            height: 32px;
+                            height: 28px;
+                            color: Theme.text;
+                            overflow: elide;
+                        }
+                        if root.demo: Text {
+                            text: "DEMO DATA";
+                            font-size: 12px;
+                            font-weight: 700;
+                            color: Theme.unavailable;
+                            height: 18px;
+                            accessible-label: "DEMO DATA";
                         }
                         ResourceButton {
                             title: "CPU";
                             value: root.cpu-summary;
                             kind: root.cpu-kind;
+                            spark: root.cpu-spark;
                             active: root.resource == 0;
                             clicked => { root.resource = 0; root.resource-requested(0); }
                         }
@@ -1077,6 +1194,7 @@ export component AppWindow inherits Window {
                             title: "メモリ";
                             value: root.memory-summary;
                             kind: root.memory-kind;
+                            spark: root.memory-spark;
                             active: root.resource == 1;
                             clicked => { root.resource = 1; root.resource-requested(1); }
                         }
@@ -1084,6 +1202,7 @@ export component AppWindow inherits Window {
                             title: "ディスク";
                             value: root.disk-summary;
                             kind: root.disk-kind;
+                            spark: root.disk-spark;
                             active: root.resource == 2;
                             clicked => { root.resource = 2; root.resource-requested(2); }
                         }
@@ -1091,6 +1210,7 @@ export component AppWindow inherits Window {
                             title: "ネットワーク";
                             value: root.network-summary;
                             kind: root.network-kind;
+                            spark: root.network-spark;
                             active: root.resource == 3;
                             clicked => { root.resource = 3; root.resource-requested(3); }
                         }
@@ -1098,6 +1218,7 @@ export component AppWindow inherits Window {
                             title: "GPU 3D";
                             value: root.gpu3d-summary;
                             kind: root.gpu3d-kind;
+                            spark: root.gpu3d-spark;
                             active: root.resource == 4;
                             clicked => { root.resource = 4; root.resource-requested(4); }
                         }
@@ -1105,6 +1226,7 @@ export component AppWindow inherits Window {
                             title: "GPU Encode";
                             value: root.gpu-encode-summary;
                             kind: root.gpu-encode-kind;
+                            spark: root.gpu-encode-spark;
                             active: root.resource == 5;
                             clicked => { root.resource = 5; root.resource-requested(5); }
                         }
@@ -1112,6 +1234,7 @@ export component AppWindow inherits Window {
                             title: "GPU Decode";
                             value: root.gpu-decode-summary;
                             kind: root.gpu-decode-kind;
+                            spark: root.gpu-decode-spark;
                             active: root.resource == 6;
                             clicked => { root.resource = 6; root.resource-requested(6); }
                         }
@@ -1119,6 +1242,7 @@ export component AppWindow inherits Window {
                             title: "専用VRAM";
                             value: root.vram-summary;
                             kind: root.vram-kind;
+                            spark: root.vram-spark;
                             active: root.resource == 7;
                             clicked => { root.resource = 7; root.resource-requested(7); }
                         }
@@ -1126,14 +1250,17 @@ export component AppWindow inherits Window {
                             title: "共有GPUメモリ";
                             value: root.shared-summary;
                             kind: root.shared-kind;
+                            spark: root.shared-spark;
                             active: root.resource == 8;
                             clicked => { root.resource = 8; root.resource-requested(8); }
                         }
                     }
                 }
-                Rectangle {
+                detail-column := Rectangle {
                     horizontal-stretch: 1;
                     vertical-stretch: 1;
+                    min-width: 0px;
+                    min-height: 0px;
                     background: Theme.card;
                     border-radius: 8px;
                     border-width: 1px;
@@ -1144,47 +1271,82 @@ export component AppWindow inherits Window {
                         height: 100%;
                         VerticalLayout {
                             width: parent.width;
-                            height: max(self.min-height, parent.height);
-                            padding: 20px;
+                            padding: 16px;
                             spacing: 8px;
                             alignment: start;
-                        Text {
-                            text: root.detail-title;
-                            font-size: 20px;
-                            font-weight: 600;
-                            color: Theme.text;
+                            detail-title := Text {
+                                text: root.detail-title;
+                                font-size: 20px;
+                                font-weight: 600;
+                                color: Theme.text;
+                                wrap: word-wrap;
+                            }
+                            detail-value := Text {
+                                text: root.detail-value;
+                                font-size: 28px;
+                                font-weight: 600;
+                                color: root.detail-kind == 3 ? Theme.unsupported : root.detail-kind == 2 ? Theme.unavailable : Theme.accent;
+                                wrap: word-wrap;
+                            }
+                            Text {
+                                text: root.detail-extra;
+                                font-size: 13px;
+                                color: Theme.text-secondary;
+                                wrap: word-wrap;
+                            }
+                            if root.detail-graph: detail-graph := HistoryGraph {
+                                points: root.detail-points;
+                                axis-high: root.graph-axis-high;
+                                axis-low: root.graph-axis-low;
+                                cursor: root.history-cursor;
+                                picked(index) => {
+                                    root.history-cursor = index;
+                                    root.history-picked(index);
+                                }
+                            }
+                            Text {
+                                text: "上位プロセス";
+                                font-size: 13px;
+                                font-weight: 600;
+                                color: Theme.text;
+                            }
+                            if root.top-rows.length == 0: Text {
+                                text: "この資源の上位プロセスはありません。";
+                                font-size: 12px;
+                                color: Theme.text-muted;
+                                wrap: word-wrap;
+                            }
+                            for row in root.top-rows: HorizontalLayout {
+                                height: 22px;
+                                spacing: 8px;
+                                Text {
+                                    text: row.name;
+                                    font-size: 13px;
+                                    color: Theme.text;
+                                    overflow: elide;
+                                    vertical-alignment: center;
+                                }
+                                Text {
+                                    text: row.value;
+                                    font-size: 13px;
+                                    horizontal-stretch: 0;
+                                    color: row.kind == 1 ? Theme.text-muted : Theme.text;
+                                    vertical-alignment: center;
+                                }
+                            }
+                            Text {
+                                text: root.detail-note;
+                                font-size: 13px;
+                                color: Theme.text-secondary;
+                                wrap: word-wrap;
+                            }
+                            Text {
+                                text: "グラフの棒をクリックすると位置だけを覚えます。過去時点の上位プロセスの再計算は、全プロセスの履歴が残っているので後から足せます。表示中も計測は続きます。";
+                                font-size: 12px;
+                                color: Theme.text-muted;
+                                wrap: word-wrap;
+                            }
                         }
-                        Text {
-                            text: root.detail-value;
-                            font-size: 32px;
-                            font-weight: 600;
-                            color: root.detail-kind == 3 ? Theme.unsupported : root.detail-kind == 2 ? Theme.unavailable : Theme.accent;
-                        }
-                        Text {
-                            text: root.detail-extra;
-                            font-size: 13px;
-                            color: Theme.text-secondary;
-                            wrap: word-wrap;
-                        }
-                        if root.detail-graph && !root.detail-graph-memory: HistoryGraph {
-                            points: root.cpu-history;
-                        }
-                        if root.detail-graph && root.detail-graph-memory: HistoryGraph {
-                            points: root.memory-history;
-                        }
-                        Text {
-                            text: root.detail-note;
-                            font-size: 13px;
-                            color: Theme.text-secondary;
-                            wrap: word-wrap;
-                        }
-                        Text {
-                            text: "履歴のクリック選択と過去時点の上位プロセスは今後のフェーズで追加します。表示中も計測は続きます。";
-                            font-size: 12px;
-                            color: Theme.text-muted;
-                            wrap: word-wrap;
-                        }
-                    }
                     }
                 }
             }

@@ -50,6 +50,11 @@ pub fn aggregate(previous: Option<&RawSample>, current: &RawSample) -> Snapshot 
         gpu_decode_percent: current.system_gpu_decode_percent,
         vram_dedicated_bytes: current.system_vram_dedicated_bytes,
         vram_shared_bytes: current.system_vram_shared_bytes,
+        disks: current.disks.clone(),
+        adapters: current.adapters.clone(),
+        gpus: current.gpus.clone(),
+        process_net: current.process_net,
+        gpu_presence: current.gpu_presence,
         processes,
         warning: current.warning.clone(),
     }

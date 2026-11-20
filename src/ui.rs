@@ -7,9 +7,13 @@ use slint::{ComponentHandle, Model, ModelRc, Timer, TimerMode, VecModel};
 
 use crate::config::UI_REFRESH_INTERVAL;
 use crate::format::DisplayKind;
+use crate::launch::LaunchOptions;
 use crate::model::ResourceId;
-use crate::present::{present_cards, present_detail, present_rows, status_line, PresentedRow};
+use crate::present::{
+    present_cards, present_detail, present_rows, status_line, top_entries, PresentedRow,
+};
 use crate::sampler::{PublishedSample, SamplerHandle};
+use crate::series::{scale_peak, scale_percent, ChartHistory};
 use crate::sort::SortColumn;
 
 slint::include_modules!();
@@ -20,14 +24,31 @@ struct UiState {
     resource: ResourceId,
     last_sequence: Option<u64>,
     rows: Rc<VecModel<ProcessRow>>,
-    cpu_points: Rc<VecModel<f32>>,
-    memory_points: Rc<VecModel<f32>>,
+    top: Rc<VecModel<TopRow>>,
+    detail_points: Rc<VecModel<f32>>,
+    cpu_spark: Rc<VecModel<f32>>,
+    memory_spark: Rc<VecModel<f32>>,
+    disk_spark: Rc<VecModel<f32>>,
+    network_spark: Rc<VecModel<f32>>,
+    gpu3d_spark: Rc<VecModel<f32>>,
+    gpu_encode_spark: Rc<VecModel<f32>>,
+    gpu_decode_spark: Rc<VecModel<f32>>,
+    vram_spark: Rc<VecModel<f32>>,
+    shared_spark: Rc<VecModel<f32>>,
 }
 
-pub fn run() -> Result<(), String> {
-    let sampler = SamplerHandle::start()?;
+pub fn run(options: LaunchOptions) -> Result<(), String> {
+    let sampler = SamplerHandle::start(options.demo.as_deref())?;
     let ui = AppWindow::new().map_err(|err| format!("ウィンドウを作成できませんでした: {err}"))?;
     ui.set_version_text(format!("PULSE {}", env!("CARGO_PKG_VERSION")).into());
+    ui.set_page(options.page);
+    ui.set_demo(options.demo.is_some());
+    if let Some(theme) = options.theme {
+        ui.global::<Theme>().set_preference(theme);
+    }
+    if let Some((width, height)) = options.size {
+        ui.window().set_size(slint::LogicalSize::new(width, height));
+    }
     // System mode follows AppsUseLightTheme. Missing key stays light.
     ui.global::<Theme>()
         .set_system_light(crate::platform::apps_use_light_theme().unwrap_or(true));
@@ -38,14 +59,32 @@ pub fn run() -> Result<(), String> {
         resource: ResourceId::Cpu,
         last_sequence: None,
         rows: Rc::new(VecModel::from(Vec::<ProcessRow>::new())),
-        cpu_points: Rc::new(VecModel::from(vec![-1.0f32; crate::history_capacity()])),
-        memory_points: Rc::new(VecModel::from(vec![-1.0f32; crate::history_capacity()])),
+        top: Rc::new(VecModel::from(Vec::<TopRow>::new())),
+        detail_points: Rc::new(VecModel::from(Vec::<f32>::new())),
+        cpu_spark: Rc::new(VecModel::from(Vec::<f32>::new())),
+        memory_spark: Rc::new(VecModel::from(Vec::<f32>::new())),
+        disk_spark: Rc::new(VecModel::from(Vec::<f32>::new())),
+        network_spark: Rc::new(VecModel::from(Vec::<f32>::new())),
+        gpu3d_spark: Rc::new(VecModel::from(Vec::<f32>::new())),
+        gpu_encode_spark: Rc::new(VecModel::from(Vec::<f32>::new())),
+        gpu_decode_spark: Rc::new(VecModel::from(Vec::<f32>::new())),
+        vram_spark: Rc::new(VecModel::from(Vec::<f32>::new())),
+        shared_spark: Rc::new(VecModel::from(Vec::<f32>::new())),
     }));
     {
         let state = state.borrow();
         ui.set_rows(ModelRc::from(state.rows.clone()));
-        ui.set_cpu_history(ModelRc::from(state.cpu_points.clone()));
-        ui.set_memory_history(ModelRc::from(state.memory_points.clone()));
+        ui.set_top_rows(ModelRc::from(state.top.clone()));
+        ui.set_detail_points(ModelRc::from(state.detail_points.clone()));
+        ui.set_cpu_spark(ModelRc::from(state.cpu_spark.clone()));
+        ui.set_memory_spark(ModelRc::from(state.memory_spark.clone()));
+        ui.set_disk_spark(ModelRc::from(state.disk_spark.clone()));
+        ui.set_network_spark(ModelRc::from(state.network_spark.clone()));
+        ui.set_gpu3d_spark(ModelRc::from(state.gpu3d_spark.clone()));
+        ui.set_gpu_encode_spark(ModelRc::from(state.gpu_encode_spark.clone()));
+        ui.set_gpu_decode_spark(ModelRc::from(state.gpu_decode_spark.clone()));
+        ui.set_vram_spark(ModelRc::from(state.vram_spark.clone()));
+        ui.set_shared_spark(ModelRc::from(state.shared_spark.clone()));
     }
 
     let latest = sampler.latest();
@@ -135,7 +174,7 @@ fn wire_resource(
 }
 
 fn apply(ui: &AppWindow, state: &Rc<RefCell<UiState>>, sample: &PublishedSample, force: bool) {
-    let (column, descending, resource, rows_model, cpu_model, memory_model) = {
+    let (column, descending, resource, rows_model) = {
         let mut state = state.borrow_mut();
         if !force && state.last_sequence == Some(sample.snapshot.sequence) {
             return;
@@ -146,25 +185,35 @@ fn apply(ui: &AppWindow, state: &Rc<RefCell<UiState>>, sample: &PublishedSample,
             state.sort_desc,
             state.resource,
             Rc::clone(&state.rows),
-            Rc::clone(&state.cpu_points),
-            Rc::clone(&state.memory_points),
         )
     };
 
     let presented = present_rows(&sample.snapshot, column, descending);
     sync_model(&rows_model, presented.into_iter().map(to_row).collect());
-    sync_model(&cpu_model, to_points(&sample.cpu_history));
-    sync_model(&memory_model, to_points(&sample.memory_history));
+    paint_graphs(ui, state, resource, &sample.charts);
+    let leaders = top_entries(&sample.snapshot, resource, 5)
+        .into_iter()
+        .map(|entry| TopRow {
+            name: entry.name.into(),
+            value: entry.value.into(),
+            kind: entry.kind.code(),
+        })
+        .collect();
+    sync_model(&state.borrow().top, leaders);
 
-    ui.set_status_text(
-        status_line(
-            &sample.snapshot,
-            sample.self_cpu,
-            sample.self_memory,
-            &sample.updated_text,
-        )
-        .into(),
+    let line = status_line(
+        &sample.snapshot,
+        sample.self_cpu,
+        sample.self_memory,
+        &sample.updated_text,
     );
+    let line = if sample.demo {
+        format!("DEMO DATA    {line}")
+    } else {
+        line
+    };
+    ui.set_demo(sample.demo);
+    ui.set_status_text(line.into());
     match &sample.snapshot.warning {
         Some(warning) => {
             ui.set_warning_text(warning.into());
@@ -203,7 +252,77 @@ fn apply(ui: &AppWindow, state: &Rc<RefCell<UiState>>, sample: &PublishedSample,
     ui.set_detail_extra(detail.extra.into());
     ui.set_detail_note(detail.note.into());
     ui.set_detail_graph(detail.show_graph);
-    ui.set_detail_graph_memory(detail.graph_is_memory);
+}
+
+fn paint_graphs(
+    ui: &AppWindow,
+    state: &Rc<RefCell<UiState>>,
+    resource: ResourceId,
+    charts: &ChartHistory,
+) {
+    let borrowed = state.borrow();
+    sync_model(
+        &borrowed.cpu_spark,
+        spark(&scale_percent(&charts.cpu).points),
+    );
+    sync_model(
+        &borrowed.memory_spark,
+        spark(&scale_percent(&charts.memory).points),
+    );
+    sync_model(
+        &borrowed.disk_spark,
+        spark(&scale_peak(&charts.disk, crate::series::rate_label).points),
+    );
+    sync_model(
+        &borrowed.network_spark,
+        spark(&scale_peak(&charts.network, crate::series::rate_label).points),
+    );
+    sync_model(
+        &borrowed.gpu3d_spark,
+        spark(&scale_percent(&charts.gpu_3d).points),
+    );
+    sync_model(
+        &borrowed.gpu_encode_spark,
+        spark(&scale_percent(&charts.gpu_encode).points),
+    );
+    sync_model(
+        &borrowed.gpu_decode_spark,
+        spark(&scale_percent(&charts.gpu_decode).points),
+    );
+    sync_model(
+        &borrowed.vram_spark,
+        spark(&scale_peak(&charts.vram, crate::series::bytes_label).points),
+    );
+    sync_model(
+        &borrowed.shared_spark,
+        spark(&scale_peak(&charts.shared, crate::series::bytes_label).points),
+    );
+    let (scaled, _) = scale_resource(resource, charts);
+    ui.set_graph_axis_high(scaled.axis_high.into());
+    ui.set_graph_axis_low(scaled.axis_low.into());
+    sync_model(&borrowed.detail_points, scaled.points);
+}
+
+fn scale_resource(
+    resource: ResourceId,
+    charts: &ChartHistory,
+) -> (crate::series::ScaledSeries, ()) {
+    let scaled = match resource {
+        ResourceId::Cpu => scale_percent(&charts.cpu),
+        ResourceId::Memory => scale_percent(&charts.memory),
+        ResourceId::Disk => scale_peak(&charts.disk, crate::series::rate_label),
+        ResourceId::Network => scale_peak(&charts.network, crate::series::rate_label),
+        ResourceId::Gpu3d => scale_percent(&charts.gpu_3d),
+        ResourceId::GpuEncode => scale_percent(&charts.gpu_encode),
+        ResourceId::GpuDecode => scale_percent(&charts.gpu_decode),
+        ResourceId::VramDedicated => scale_peak(&charts.vram, crate::series::bytes_label),
+        ResourceId::VramShared => scale_peak(&charts.shared, crate::series::bytes_label),
+    };
+    (scaled, ())
+}
+
+fn spark(points: &[f32]) -> Vec<f32> {
+    crate::series::downsample(points, 36)
 }
 
 fn to_row(row: PresentedRow) -> ProcessRow {
@@ -240,16 +359,6 @@ fn to_kind(kind: DisplayKind) -> CellKind {
     }
 }
 
-fn to_points(values: &[Option<f64>]) -> Vec<f32> {
-    values
-        .iter()
-        .map(|value| match value {
-            Some(number) if number.is_finite() => *number as f32,
-            _ => -1.0,
-        })
-        .collect()
-}
-
 fn sync_model<T: Clone + 'static>(model: &VecModel<T>, mut next: Vec<T>) {
     let target = next.len();
     let shared = model.row_count().min(target);
@@ -261,5 +370,169 @@ fn sync_model<T: Clone + 'static>(model: &VecModel<T>, mut next: Vec<T>) {
     }
     while model.row_count() > target {
         let _ = model.remove(model.row_count() - 1);
+    }
+}
+
+#[cfg(test)]
+mod layout_tests {
+    use super::*;
+    use i_slint_backend_testing::ElementHandle;
+    use slint::{ComponentHandle, ModelRc, VecModel};
+    use std::rc::Rc;
+    use std::sync::Once;
+
+    fn backend() {
+        static ONCE: Once = Once::new();
+        ONCE.call_once(i_slint_backend_testing::init_no_event_loop);
+    }
+
+    fn element(ui: &AppWindow, name: &str) -> ElementHandle {
+        let qualified = format!("AppWindow::{name}");
+        let found = ElementHandle::find_by_element_id(ui, qualified.as_str()).next();
+        found.unwrap_or_else(|| panic!("missing element {name}"))
+    }
+
+    fn sample_row(index: i32) -> ProcessRow {
+        let text: slint::SharedString = "1.0%".into();
+        let bytes: slint::SharedString = "1.0 MB".into();
+        ProcessRow {
+            name: format!("process-{index}-{}", "n".repeat(24)).into(),
+            pid: index.to_string().into(),
+            cpu: text.clone(),
+            cpu_kind: CellKind::Value,
+            memory: bytes.clone(),
+            memory_kind: CellKind::Value,
+            disk: bytes.clone(),
+            disk_kind: CellKind::Value,
+            network: bytes.clone(),
+            network_kind: CellKind::Value,
+            gpu3d: text.clone(),
+            gpu3d_kind: CellKind::Value,
+            gpu_encode: text.clone(),
+            gpu_encode_kind: CellKind::Value,
+            gpu_decode: text.clone(),
+            gpu_decode_kind: CellKind::Value,
+            vram: bytes.clone(),
+            vram_kind: CellKind::Value,
+            shared: bytes,
+            shared_kind: CellKind::Value,
+        }
+    }
+
+    fn open_performance(width: f32, height: f32, dark: bool) -> AppWindow {
+        backend();
+        let ui = AppWindow::new().expect("window");
+        ui.window().set_size(slint::LogicalSize::new(width, height));
+        ui.set_page(1);
+        ui.set_nav_expanded(true);
+        ui.set_demo(true);
+        ui.set_detail_graph(true);
+        ui.set_detail_title("CPU".into());
+        ui.set_detail_value("42.0%".into());
+        ui.set_detail_extra("論理プロセッサ 8 個".into());
+        ui.set_detail_note("計測の説明です。グラフと重ならないことを確認します。".into());
+        ui.set_cpu_summary("42.0%".into());
+        ui.set_memory_summary("6.4 GB / 16 GB".into());
+        let points = ModelRc::from(Rc::new(VecModel::from(vec![
+            10.0f32, 80.0, 30.0, 95.0, 20.0,
+        ])));
+        ui.set_detail_points(points.clone());
+        ui.set_cpu_spark(points);
+        ui.global::<Theme>()
+            .set_preference(if dark { 1 } else { 0 });
+        ui.show().expect("show");
+        ui
+    }
+
+    fn assert_performance_fits(ui: &AppWindow, width: f32, height: f32) {
+        let column = element(ui, "resource-column");
+        let detail = element(ui, "detail-column");
+        let title = element(ui, "detail-title");
+        let value = element(ui, "detail-value");
+        let graph = element(ui, "detail-graph");
+        let column_size = column.size();
+        let column_at = column.absolute_position();
+        let detail_size = detail.size();
+        let detail_at = detail.absolute_position();
+        assert!(
+            column_size.width > 160.0,
+            "resource column collapsed to {}",
+            column_size.width
+        );
+        assert!(
+            column_size.height > 200.0 && column_size.height <= height + 1.0,
+            "resource column height {} does not match window {height}",
+            column_size.height
+        );
+        assert!(
+            detail_size.width > 100.0,
+            "detail column collapsed to {}",
+            detail_size.width
+        );
+        assert!(
+            detail_size.height <= height + 1.0,
+            "detail column is taller than the window"
+        );
+        assert!(
+            column_at.x + column_size.width <= detail_at.x + 2.0,
+            "resource list overlaps the detail panel"
+        );
+        assert!(detail_at.x + detail_size.width <= width + 1.0);
+        assert!(column_at.y >= -1.0 && column_at.y + column_size.height <= height + 1.0);
+        assert!(title.size().width > 16.0 && title.size().height > 8.0);
+        assert!(value.size().width > 16.0 && value.size().height > 8.0);
+        assert!(graph.size().width > 60.0 && graph.size().height > 80.0);
+        let graph_at = graph.absolute_position();
+        assert!(graph_at.x >= detail_at.x - 1.0);
+        assert!(graph_at.x + graph.size().width <= detail_at.x + detail_size.width + 2.0);
+        assert!(
+            value.absolute_position().y + value.size().height <= graph_at.y + 2.0,
+            "the value overlaps the graph"
+        );
+        let cpu = ElementHandle::find_by_accessible_label(ui, "CPU")
+            .next()
+            .expect("CPU button");
+        let memory = ElementHandle::find_by_accessible_label(ui, "メモリ")
+            .next()
+            .expect("memory button");
+        assert!(
+            cpu.absolute_position().y + cpu.size().height <= memory.absolute_position().y + 1.0
+        );
+        assert!(cpu.size().height > 40.0);
+        memory.mock_single_click(slint::platform::PointerEventButton::Left);
+        assert_eq!(ui.get_resource(), 1);
+    }
+
+    #[test]
+    fn performance_page_fits_light_and_dark_at_three_sizes() {
+        for dark in [false, true] {
+            for (width, height) in [(1280.0, 720.0), (1920.0, 1080.0), (800.0, 600.0)] {
+                let ui = open_performance(width, height, dark);
+                assert_eq!(ui.global::<Theme>().get_dark(), dark);
+                assert_performance_fits(&ui, width, height);
+                let _ = ui.hide();
+            }
+        }
+    }
+
+    #[test]
+    fn process_list_stays_virtualized_with_a_thousand_rows() {
+        let ui = open_performance(1280.0, 720.0, false);
+        let rows: Vec<ProcessRow> = (0..1000).map(sample_row).collect();
+        ui.set_rows(ModelRc::from(Rc::new(VecModel::from(rows))));
+        ui.set_page(0);
+        ui.show().expect("show process page");
+        let list = element(&ui, "process-list");
+        assert!(
+            list.size().height < 2_000.0,
+            "ListView height {} looks like it instantiated every row",
+            list.size().height
+        );
+        assert!(list.size().height > 80.0);
+        let before = ui.get_table_width();
+        ui.global::<Columns>().set_name(420.0);
+        let after = ui.get_table_width();
+        assert!(after > before, "column resize did not grow the table width");
+        let _ = ui.hide();
     }
 }

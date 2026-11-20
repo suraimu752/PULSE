@@ -22,6 +22,10 @@ Slint のロイヤリティフリーライセンス（デスクトップ向け�
 
 有効にした Slint の feature: `std`、`backend-default`、`renderer-femtovg`、`renderer-software`、`accessibility`、`compat-1-18`。`system-tray` は無効です。
 
+## 開発時だけ使うテスト用クレート
+
+`i-slint-backend-testing` 1.19.0 は dev-dependency です。ヘッドレスでレイアウトを検査します。ライセンスは GPL-3.0-only、または Slint Royalty-free / Software license のデュアルです。このリポジトリは GPL-3.0-only として使うので、GPL 側に合わせます。実行ファイルにはリンクしません。
+
 ## 開発用スキル（バイナリにはリンクしない）
 
 UI の設計メモとして、次のスキル一式を `.cursor/skills/` に同梱した。実行ファイルには含めない。取り込み時に各リポジトリの `LICENSE` を読み、下の SHA の内容と一致することを確認した。`vercel-labs/agent-skills` はライセンスファイルが無いため入れていない。

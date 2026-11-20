@@ -5,7 +5,7 @@ use crate::format::{
     DisplayKind,
 };
 use crate::metric::MetricValue;
-use crate::model::{ProcessSnapshot, ResourceId, Snapshot};
+use crate::model::{GpuPresence, ProcessNetMode, ProcessSnapshot, ResourceId, Snapshot};
 use crate::sort::{sort_processes, SortColumn};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -71,7 +71,10 @@ pub fn present_rows(
 ) -> Vec<PresentedRow> {
     let mut processes = snapshot.processes.clone();
     sort_processes(&mut processes, column, descending);
-    processes.iter().map(present_row).collect()
+    processes
+        .iter()
+        .map(|process| present_row(process, snapshot.process_net))
+        .collect()
 }
 
 pub fn status_line(
@@ -138,40 +141,49 @@ pub fn present_detail(snapshot: &Snapshot, resource: ResourceId) -> DetailText {
             show_graph: !matches!(snapshot.memory_total_bytes, MetricValue::Unsupported),
             graph_is_memory: true,
         },
-        ResourceId::Disk => unsupported_detail(
+        ResourceId::Disk => rate_detail(
             "ディスク",
-            "ディスクの読み書き速度は Phase 1 では計測しません。未対応は実測の 0 ではありません。物理ディスクの転送量とプロセスの I/O 要求量は別の値として、後から Collector を追加します。",
+            snapshot.disk_read_bps,
+            snapshot.disk_write_bps,
+            &disk_extra(snapshot),
+            "プロセス列の読み書きは I/O カウンタの増分です。物理ディスクの転送量とは別で、ここには足し合わせていません。",
         ),
-        ResourceId::Network => unsupported_detail(
-            "ネットワーク",
-            "ネットワークの送受信速度は Phase 1 では計測しません。未対応は実測の 0 ではありません。送受信は分けて、計測できない通信は欠測として扱う予定です。",
-        ),
-        ResourceId::Gpu3d => unsupported_detail(
-            "GPU 3D",
-            "GPU 3D 使用率は Phase 1 では計測しません。複数の GPU エンジンの使用率は単純に足し合わせられないため、未実装のあいだは 0 と表示しません。",
-        ),
-        ResourceId::GpuEncode => unsupported_detail(
-            "GPU Encode",
-            "GPU Encode 使用率は Phase 1 では計測しません。未対応は実測の 0 ではありません。",
-        ),
-        ResourceId::GpuDecode => unsupported_detail(
-            "GPU Decode",
-            "GPU Decode 使用率は Phase 1 では計測しません。未対応は実測の 0 ではありません。",
-        ),
-        ResourceId::VramDedicated => unsupported_detail(
+        ResourceId::Network => network_detail(snapshot),
+        ResourceId::Gpu3d => gpu_detail(snapshot, "GPU 3D", snapshot.gpu_3d_percent, GpuEngine::ThreeD),
+        ResourceId::GpuEncode => {
+            gpu_detail(snapshot, "GPU Encode", snapshot.gpu_encode_percent, GpuEngine::Encode)
+        }
+        ResourceId::GpuDecode => {
+            gpu_detail(snapshot, "GPU Decode", snapshot.gpu_decode_percent, GpuEngine::Decode)
+        }
+        ResourceId::VramDedicated => vram_detail(
+            snapshot,
             "専用 VRAM",
-            "専用 GPU メモリは Phase 1 では計測しません。未対応は実測の 0 ではありません。",
+            snapshot.vram_dedicated_bytes,
+            true,
         ),
-        ResourceId::VramShared => unsupported_detail(
+        ResourceId::VramShared => vram_detail(
+            snapshot,
             "共有 GPU メモリ",
-            "共有 GPU メモリは Phase 1 では計測しません。未対応は実測の 0 ではありません。",
+            snapshot.vram_shared_bytes,
+            false,
         ),
     }
 }
 
-fn present_row(process: &ProcessSnapshot) -> PresentedRow {
+enum GpuEngine {
+    ThreeD,
+    Encode,
+    Decode,
+}
+
+fn present_row(process: &ProcessSnapshot, net: ProcessNetMode) -> PresentedRow {
     let (disk, disk_kind) = format_rate_pair(process.disk_read_bps, process.disk_write_bps);
-    let (network, network_kind) = format_rate_pair(process.net_send_bps, process.net_recv_bps);
+    let (network, network_kind) = crate::format::format_network_cell(
+        process.net_send_bps,
+        process.net_recv_bps,
+        net == ProcessNetMode::NeedsAdmin,
+    );
     PresentedRow {
         name: process.name.clone(),
         pid: process.key.pid.to_string(),
@@ -217,6 +229,244 @@ fn card_percent(value: MetricValue<f64>) -> ResourceCard {
 fn card_pair(read: MetricValue<f64>, write: MetricValue<f64>) -> ResourceCard {
     let (text, kind) = format_rate_pair(read, write);
     ResourceCard { text, kind }
+}
+
+fn rate_detail(
+    title: &str,
+    read: MetricValue<f64>,
+    write: MetricValue<f64>,
+    extra: &str,
+    note: &str,
+) -> DetailText {
+    let (value, kind) = format_rate_pair(read, write);
+    DetailText {
+        title: title.to_string(),
+        value,
+        kind,
+        extra: extra.to_string(),
+        note: note.to_string(),
+        show_graph: !matches!(
+            (read, write),
+            (MetricValue::Unsupported, MetricValue::Unsupported)
+        ),
+        graph_is_memory: false,
+    }
+}
+
+fn disk_extra(snapshot: &Snapshot) -> String {
+    let mut lines = Vec::new();
+    if snapshot.disks.is_empty() {
+        lines.push(interval_text(snapshot));
+    } else {
+        for disk in &snapshot.disks {
+            let (text, _) = format_rate_pair(disk.read_bps, disk.write_bps);
+            lines.push(format!("{}  {text}", disk.name));
+        }
+    }
+    lines.join("    ")
+}
+
+fn network_detail(snapshot: &Snapshot) -> DetailText {
+    let admin = snapshot.process_net == ProcessNetMode::NeedsAdmin;
+    let (value, kind) = format_rate_pair(snapshot.net_recv_bps, snapshot.net_send_bps);
+    let unsupported = matches!(
+        (snapshot.net_recv_bps, snapshot.net_send_bps),
+        (MetricValue::Unsupported, MetricValue::Unsupported)
+    ) && snapshot.adapters.is_empty();
+    let mut extra = if snapshot.adapters.is_empty() {
+        interval_text(snapshot)
+    } else {
+        snapshot
+            .adapters
+            .iter()
+            .map(|adapter| {
+                let (text, _) = format_rate_pair(adapter.read_bps, adapter.write_bps);
+                format!("{}  {text}", adapter.name)
+            })
+            .collect::<Vec<_>>()
+            .join("    ")
+    };
+    if admin {
+        extra.push_str("    プロセス別の帰属は要管理者");
+    }
+    if unsupported && !admin {
+        return unsupported_detail(
+            "ネットワーク",
+            "ネットワークの送受信速度を計測する Collector はまだ接続されていません。未対応は実測の 0 ではありません。",
+        );
+    }
+    DetailText {
+        title: "ネットワーク".to_string(),
+        value: if unsupported && admin {
+            "要管理者".to_string()
+        } else {
+            value
+        },
+        kind: if unsupported && admin {
+            DisplayKind::Unavailable
+        } else {
+            kind
+        },
+        extra,
+        note: "上の速度はアダプターの送受信です。プロセスに帰属できる速度とは別の計測値です。カーネルのネットワーク追跡は通常ユーザーでは使わないため、プロセス列は要管理者と出します。欠測は 0 にしません。".to_string(),
+        show_graph: !unsupported,
+        graph_is_memory: false,
+    }
+}
+
+fn gpu_detail(
+    snapshot: &Snapshot,
+    title: &str,
+    value: MetricValue<f64>,
+    engine: GpuEngine,
+) -> DetailText {
+    if snapshot.gpu_presence == GpuPresence::None {
+        return DetailText {
+            title: title.to_string(),
+            value: "なし".to_string(),
+            kind: DisplayKind::Unsupported,
+            extra: "GPU エンジンのカウンタが見つかりませんでした。".to_string(),
+            note: "GPU が無い、またはドライバが GPU Engine カウンタを出していません。0% とは表示しません。".to_string(),
+            show_graph: false,
+            graph_is_memory: false,
+        };
+    }
+    if snapshot.gpu_presence == GpuPresence::Unknown && matches!(value, MetricValue::Unsupported) {
+        return unsupported_detail(
+            title,
+            "GPU 使用率を計測する Collector はまだ接続されていません。複数エンジンを足して 100% を超える値にはしません。未対応は実測の 0 ではありません。",
+        );
+    }
+    let extra = if snapshot.gpus.is_empty() {
+        interval_text(snapshot)
+    } else {
+        snapshot
+            .gpus
+            .iter()
+            .map(|gpu| {
+                let metric = match engine {
+                    GpuEngine::ThreeD => gpu.util_3d,
+                    GpuEngine::Encode => gpu.util_encode,
+                    GpuEngine::Decode => gpu.util_decode,
+                };
+                format!("{}  {}", gpu.name, format_percent(metric))
+            })
+            .collect::<Vec<_>>()
+            .join("    ")
+    };
+    DetailText {
+        title: title.to_string(),
+        value: format_percent(value),
+        kind: percent_kind(value),
+        extra,
+        note: "同じ種類のエンジンが複数あるときは最大値を使います。3D と Encode と Decode は足しません。アダプターは LUID で区別します。".to_string(),
+        show_graph: !matches!(value, MetricValue::Unsupported),
+        graph_is_memory: false,
+    }
+}
+
+fn vram_detail(
+    snapshot: &Snapshot,
+    title: &str,
+    value: MetricValue<u64>,
+    dedicated: bool,
+) -> DetailText {
+    if snapshot.gpu_presence == GpuPresence::None {
+        return DetailText {
+            title: title.to_string(),
+            value: "なし".to_string(),
+            kind: DisplayKind::Unsupported,
+            extra: "GPU がありません。".to_string(),
+            note: "専用メモリと共有メモリは別の値です。0 バイトとは表示しません。".to_string(),
+            show_graph: false,
+            graph_is_memory: false,
+        };
+    }
+    if snapshot.gpu_presence == GpuPresence::Unknown && matches!(value, MetricValue::Unsupported) {
+        return unsupported_detail(
+            title,
+            "GPU メモリを計測する Collector はまだ接続されていません。専用と共有は別の値です。未対応は実測の 0 ではありません。",
+        );
+    }
+    let extra = if snapshot.gpus.is_empty() {
+        interval_text(snapshot)
+    } else {
+        snapshot
+            .gpus
+            .iter()
+            .map(|gpu| {
+                let metric = if dedicated {
+                    gpu.dedicated_bytes
+                } else {
+                    gpu.shared_bytes
+                };
+                format!("{}  {}", gpu.name, format_bytes(metric))
+            })
+            .collect::<Vec<_>>()
+            .join("    ")
+    };
+    DetailText {
+        title: title.to_string(),
+        value: format_bytes(value),
+        kind: bytes_kind(value),
+        extra,
+        note: "GPU Process Memory カウンタの専用使用量と共有使用量です。ドライバによって 0 や遅れた値になることがあります。プロセス間で共有分を足すと二重に数えることがあるため、アダプターごとの値を併記します。".to_string(),
+        show_graph: !matches!(value, MetricValue::Unsupported),
+        graph_is_memory: false,
+    }
+}
+
+pub struct TopEntry {
+    pub name: String,
+    pub value: String,
+    pub kind: DisplayKind,
+}
+
+/// Highest current values for the selected resource. Computed from the full list.
+/// Rows without a real reading are omitted. History still stores every process.
+pub fn top_entries(snapshot: &Snapshot, resource: ResourceId, limit: usize) -> Vec<TopEntry> {
+    if limit == 0 {
+        return Vec::new();
+    }
+    let column = match resource {
+        ResourceId::Cpu => SortColumn::Cpu,
+        ResourceId::Memory => SortColumn::Memory,
+        ResourceId::Disk => SortColumn::Disk,
+        ResourceId::Network => SortColumn::Network,
+        ResourceId::Gpu3d => SortColumn::Gpu3d,
+        ResourceId::GpuEncode => SortColumn::GpuEncode,
+        ResourceId::GpuDecode => SortColumn::GpuDecode,
+        ResourceId::VramDedicated => SortColumn::VramDedicated,
+        ResourceId::VramShared => SortColumn::VramShared,
+    };
+    let mut processes = snapshot.processes.clone();
+    sort_processes(&mut processes, column, true);
+    processes
+        .into_iter()
+        .filter_map(|process| {
+            let row = present_row(&process, snapshot.process_net);
+            let (text, kind) = match resource {
+                ResourceId::Cpu => (row.cpu, row.cpu_kind),
+                ResourceId::Memory => (row.memory, row.memory_kind),
+                ResourceId::Disk => (row.disk, row.disk_kind),
+                ResourceId::Network => (row.network, row.network_kind),
+                ResourceId::Gpu3d => (row.gpu3d, row.gpu3d_kind),
+                ResourceId::GpuEncode => (row.gpu_encode, row.gpu_encode_kind),
+                ResourceId::GpuDecode => (row.gpu_decode, row.gpu_decode_kind),
+                ResourceId::VramDedicated => (row.vram, row.vram_kind),
+                ResourceId::VramShared => (row.shared, row.shared_kind),
+            };
+            if !matches!(kind, DisplayKind::Value | DisplayKind::Zero) {
+                return None;
+            }
+            Some(TopEntry {
+                name: row.name,
+                value: text,
+                kind,
+            })
+        })
+        .take(limit)
+        .collect()
 }
 
 fn unsupported_detail(title: &str, note: &str) -> DetailText {
@@ -283,6 +533,11 @@ mod tests {
             gpu_decode_percent: MetricValue::Unsupported,
             vram_dedicated_bytes: MetricValue::Unsupported,
             vram_shared_bytes: MetricValue::Unsupported,
+            disks: Vec::new(),
+            adapters: Vec::new(),
+            gpus: Vec::new(),
+            process_net: crate::model::ProcessNetMode::Attributed,
+            gpu_presence: crate::model::GpuPresence::Unknown,
             processes: vec![ProcessSnapshot {
                 key: ProcessKey {
                     pid: 4,

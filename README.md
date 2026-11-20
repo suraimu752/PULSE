@@ -6,11 +6,25 @@ Process Usage and Load Surveillance Engine。Windows 11 向けの軽量タスク
 
 ## スクリーンショット
 
-Linux 上のレイアウト確認です。プロセスは 0 件、CPU とメモリは `未対応` です。Windows 11 で起動した画面ではありません。
+Linux 上のレイアウト確認です。`--features mock` の DEMO DATA で、Windows 11 の実測ではありません。
 
-![ライト（Linux でのレイアウト確認）](docs/screenshots/linux-layout-light.png)
+![パフォーマンス 1280×720 ライト](docs/screenshots/perf-light-1280x720.png)
 
-![ダーク（Linux でのレイアウト確認）](docs/screenshots/linux-layout-dark.png)
+![パフォーマンス 1280×720 ダーク](docs/screenshots/perf-dark-1280x720.png)
+
+![パフォーマンス 1920×1080 ライト](docs/screenshots/perf-light-1920x1080.png)
+
+![パフォーマンス 800×600 ライト](docs/screenshots/perf-light-800x600.png)
+
+## デモデータで起動する（Linux）
+
+通常の Release ビルドには入っていません。
+
+```bash
+cargo run --features mock -- --demo normal --page performance --size 1280x720 --theme light
+```
+
+シナリオは `normal`（100 プロセス）、`many`（1,000 プロセス）、`gaps`（N/A・未対応・実測 0）、`special`（出現、終了、PID 再利用、複数 GPU / ディスク / アダプター）です。画面に `DEMO DATA` と出ます。乱数ではなく決まった式です。
 
 ## 主な機能（Phase 1）
 
