@@ -654,6 +654,7 @@ component HistoryGraph inherits Rectangle {
     callback picked(int);
     callback hovered(int);
     in property <bool> compact: false;
+    in property <bool> tight: false;
     min-width: 0px;
     preferred-width: 0px;
     horizontal-stretch: 1;
@@ -663,19 +664,19 @@ component HistoryGraph inherits Rectangle {
     border-color: Theme.graph-border;
     clip: true;
     VerticalLayout {
-        padding: 12px;
-        spacing: 6px;
+        padding: root.tight ? 4px : 12px;
+        spacing: root.tight ? 2px : 6px;
         HorizontalLayout {
-            spacing: 8px;
+            spacing: root.tight ? 4px : 8px;
             vertical-stretch: 1;
             min-height: 0px;
             VerticalLayout {
-                width: root.compact ? 0px : 64px;
+                width: root.compact ? 0px : root.tight ? 36px : 64px;
                 Text {
                     text: root.axis-high;
                     font-size: 11px;
                     color: Theme.text-muted;
-                    height: 16px;
+                    height: root.tight ? 12px : 16px;
                     overflow: elide;
                 }
                 Rectangle { vertical-stretch: 1; }
@@ -683,7 +684,7 @@ component HistoryGraph inherits Rectangle {
                     text: root.axis-low;
                     font-size: 11px;
                     color: Theme.text-muted;
-                    height: 16px;
+                    height: root.tight ? 12px : 16px;
                     overflow: elide;
                 }
             }
@@ -739,7 +740,7 @@ component HistoryGraph inherits Rectangle {
             }
         }
         HorizontalLayout {
-            height: root.compact ? 0px : 18px;
+            height: root.compact ? 0px : root.tight ? 14px : 18px;
             Text { text: root.compact ? "" : "60秒前"; font-size: 11px; color: Theme.text-muted; }
             Rectangle { horizontal-stretch: 1; }
             Text { text: root.compact ? "" : "現在"; font-size: 11px; color: Theme.text-muted; }
@@ -1680,40 +1681,85 @@ export component AppWindow inherits Window {
                                             text: root.cpu-diagnostics;
                                             font-size: 11px;
                                             color: Theme.text-muted;
-                                            wrap: root.cpu-view == 1 ? word-wrap : no-wrap;
-                                            overflow: elide;
-                                            max-height: root.height < 680px && root.cpu-view == 0 ? 16px : 48px;
+                                            wrap: word-wrap;
                                         }
-                                        if root.resource == 0 && root.cpu-view == 1 && root.cpu-message != "": Text {
+                                        if root.cpu-admin && parent.width < 480px: VerticalLayout {
+                                            spacing: 6px;
+                                            alignment: start;
+                                            Text {
+                                                text: root.cpu-message;
+                                                font-size: 12px;
+                                                color: Theme.text-secondary;
+                                                wrap: word-wrap;
+                                            }
+                                            cpu-admin-narrow := TouchArea {
+                                                width: 168px;
+                                                height: 28px;
+                                                horizontal-stretch: 0;
+                                                accessible-role: button;
+                                                accessible-label: "管理者として再起動";
+                                                clicked => { root.cpu-elevate(); }
+                                                Rectangle {
+                                                    width: 100%;
+                                                    height: 100%;
+                                                    border-radius: 6px;
+                                                    border-width: 1px;
+                                                    border-color: Theme.line;
+                                                    background: cpu-admin-narrow.pressed ? Theme.nav-pressed : Theme.card;
+                                                    Text {
+                                                        width: 100%;
+                                                        height: 100%;
+                                                        text: "管理者として再起動";
+                                                        font-size: 12px;
+                                                        color: Theme.text;
+                                                        horizontal-alignment: center;
+                                                        vertical-alignment: center;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        if root.cpu-admin && parent.width >= 480px: HorizontalLayout {
+                                            spacing: 8px;
+                                            alignment: start;
+                                            Text {
+                                                text: root.cpu-message;
+                                                font-size: 12px;
+                                                color: Theme.text-secondary;
+                                                wrap: word-wrap;
+                                                vertical-alignment: center;
+                                                horizontal-stretch: 1;
+                                            }
+                                            cpu-admin-button := TouchArea {
+                                                width: 168px;
+                                                height: 28px;
+                                                horizontal-stretch: 0;
+                                                accessible-role: button;
+                                                accessible-label: "管理者として再起動";
+                                                clicked => { root.cpu-elevate(); }
+                                                Rectangle {
+                                                    width: 100%;
+                                                    height: 100%;
+                                                    border-radius: 6px;
+                                                    border-width: 1px;
+                                                    border-color: Theme.line;
+                                                    background: cpu-admin-button.pressed ? Theme.nav-pressed : Theme.card;
+                                                    Text {
+                                                        width: 100%;
+                                                        height: 100%;
+                                                        text: "管理者として再起動";
+                                                        font-size: 12px;
+                                                        color: Theme.text;
+                                                        horizontal-alignment: center;
+                                                        vertical-alignment: center;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        if root.resource == 0 && root.cpu-view == 1 && !root.cpu-admin && root.cpu-message != "": Text {
                                             text: root.cpu-message;
                                             font-size: 12px;
                                             color: Theme.text-secondary;
                                             wrap: word-wrap;
-                                        }
-                                        if root.cpu-admin: cpu-admin-button := TouchArea {
-                                            width: 168px;
-                                            height: 28px;
-                                            horizontal-stretch: 0;
-                                            accessible-role: button;
-                                            accessible-label: "管理者として再起動";
-                                            clicked => { root.cpu-elevate(); }
-                                            Rectangle {
-                                                width: 100%;
-                                                height: 100%;
-                                                border-radius: 6px;
-                                                border-width: 1px;
-                                                border-color: Theme.line;
-                                                background: cpu-admin-button.pressed ? Theme.nav-pressed : Theme.card;
-                                                Text {
-                                                    width: 100%;
-                                                    height: 100%;
-                                                    text: "管理者として再起動";
-                                                    font-size: 12px;
-                                                    color: Theme.text;
-                                                    horizontal-alignment: center;
-                                                    vertical-alignment: center;
-                                                }
-                                            }
                                         }
                                         if root.resource == 0 && root.cpu-view == 1 && root.cpu-cards.length > 0: Rectangle {
                                             property <int> columns: parent.width < 520px ? 2 : 4;
@@ -1806,8 +1852,10 @@ export component AppWindow inherits Window {
                                             horizontal-stretch: 1;
                                             preferred-width: 0px;
                                             min-width: 0px;
-                                            // 800x600 must still show the five ranking rows under the graph.
-                                            height: root.height < 680px ? 88px : 220px;
+                                            // 800x600 must still show the five ranking rows. Tight mode
+                                            // keeps the axis inside the shorter graph so labels do not collide.
+                                            tight: root.height < 680px;
+                                            height: root.height < 680px ? 84px : 220px;
                                             points: root.detail-points;
                                             axis-high: root.graph-axis-high;
                                             axis-low: root.graph-axis-low;
@@ -1937,7 +1985,7 @@ export component AppWindow inherits Window {
                                             value: row.value;
                                             kind: row.kind;
                                         }
-                                        Text {
+                                        if root.detail-note != "": Text {
                                             text: root.detail-note;
                                             font-size: 13px;
                                             color: Theme.text-secondary;

@@ -601,10 +601,7 @@ fn paint_logical(ui: &AppWindow, state: &Rc<RefCell<UiState>>, sample: &Publishe
                 "この割合は、その論理プロセッサ上の時間を区間の長さで割った値です。全体 CPU とは分母が違います。"
                     .into(),
             );
-            ui.set_detail_note(
-                "この表は、選んだ論理プロセッサ上の時間を区間の長さで割った割合です。全体 CPU（全論理プロセッサの GetSystemTimes）とは分母が違います。アイドルは入れません。"
-                    .into(),
-            );
+            ui.set_detail_note("アイドルは順位に入れません。".into());
             if let Some(id) = selected {
                 if let Some((index, cpu)) =
                     processors.iter().enumerate().find(|(_, cpu)| cpu.id == id)
@@ -652,28 +649,26 @@ fn paint_logical(ui: &AppWindow, state: &Rc<RefCell<UiState>>, sample: &Publishe
             }
         }
         CpuDetailState::Off => {
-            ui.set_detail_note(
-                "詳細分析はオフです。全体の使用率はこれまでどおり GetSystemTimes です。".into(),
-            );
+            ui.set_detail_note("".into());
             ui.set_cpu_message(
                 "詳細分析はオフです。全体 CPU とプロセス一覧は計測を続けます。".into(),
             );
             ui.set_rank_caption("論理 CPU のプロセス".into());
-            ui.set_rank_empty("詳細分析はオフです。".into());
+            ui.set_rank_empty("N/A".into());
             sync_model(&state.borrow().top, Vec::new());
         }
         CpuDetailState::NeedsAdmin => {
-            ui.set_detail_note(detail.message.as_str().into());
+            ui.set_detail_note("".into());
             ui.set_cpu_message(detail.message.as_str().into());
             ui.set_rank_caption("論理 CPU のプロセス".into());
-            ui.set_rank_empty(detail.message.as_str().into());
+            ui.set_rank_empty("N/A".into());
             sync_model(&state.borrow().top, Vec::new());
         }
         CpuDetailState::Unavailable => {
-            ui.set_detail_note(detail.message.as_str().into());
+            ui.set_detail_note("".into());
             ui.set_cpu_message(detail.message.as_str().into());
             ui.set_rank_caption("論理 CPU のプロセス".into());
-            ui.set_rank_empty(detail.message.as_str().into());
+            ui.set_rank_empty("N/A".into());
             sync_model(&state.borrow().top, Vec::new());
         }
     }
