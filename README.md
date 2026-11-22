@@ -26,13 +26,13 @@ Linux 上のレイアウト確認です。`--features mock` の DEMO DATA で、
 cargo run --features mock -- --demo normal --page performance --size 1280x720 --theme light
 ```
 
-シナリオは `normal`（100 プロセス）、`many`（1,000 プロセス）、`gaps`（N/A・未対応・実測 0）、`special`（出現、終了、PID 再利用、複数 GPU / ディスク / アダプター）、`history`（30 秒前の CPU スパイク、終了したプロセス、PID 再利用、2 つの GPU）です。画面に `DEMO DATA` と出ます。乱数ではなく決まった式です。
+シナリオは `normal`（100 プロセス）、`many`（1,000 プロセス）、`gaps`（N/A・未対応・実測 0）、`special`（出現、終了、PID 再利用、複数 GPU / ディスク / アダプター）、`history`（30 秒前の CPU スパイク、終了したプロセス、PID 再利用、2 つの GPU）、`cpus`（8 論理 CPU。CPU 間の移動、PID 再利用、30 秒前の CPU 5 が `heavy-cpu5.exe`）、`cpus32`（32 論理 CPU）、`cpus-denied`（詳細分析は権限不足。全体 CPU は出る）です。画面に `DEMO DATA` と出ます。乱数ではなく決まった式です。`DEMO` の診断行は ETW の実測ではありません。
 
 ```bash
 cargo run --features mock -- --demo history --page performance --size 1280x720 --theme dark --select-history 59
 ```
 
-`--resource` は `cpu` / `memory` / `disk` / `network` / `gpu3d` / `gpu-encode` / `gpu-decode` / `vram` / `shared` です。`--select-history N` は 60 秒軸の N 番目の棒を一度だけ固定します。`--age-history SECONDS` は `--demo` と `--select-history` と一緒のときだけ使えます。固定した記録を残したまま模擬時計を進め、グラフの外に出た選択（「選択中：○分○秒前」、選択線なし）を確認します。どれも画面確認用です。
+`--resource` は `cpu` / `memory` / `disk` / `network` / `gpu3d` / `gpu-encode` / `gpu-decode` / `vram` / `shared` です。`--select-history N` は 60 秒軸の N 番目の棒を一度だけ固定します。`--age-history SECONDS` は `--demo` と `--select-history` と一緒のときだけ使えます。固定した記録を残したまま模擬時計を進め、グラフの外に出た選択（「選択中：○分○秒前」、選択線なし）を確認します。`--cpu-view overall|logical` は全体グラフと論理 CPU の格子です。`--select-cpu N` はその格子の CPU を選びます。`--cpu-detail on|off` は詳細分析です。`cpus` / `cpus32` / `cpus-denied` は、指定が無ければ論理 CPU 表示かつ分析オンで開きます。どれも画面確認用です。
 
 ## 主な機能（Phase 1）
 
@@ -50,7 +50,7 @@ cargo run --features mock -- --demo history --page performance --size 1280x720 -
 
 列と資源の並び、非表示、分割位置は `%APPDATA%\PULSE\ui.cfg` に保存する。Linux では `~/.config/PULSE/ui.cfg`。環境変数 `PULSE_CONFIG_DIR` があればそのディレクトリを使う。ネットワークへは送らない。
 
-検索と論理プロセッサ別ランキングは未実装です。ナビゲーションの「準備中」項目はその置き場です。
+検索は未実装です。ナビゲーションの「準備中」項目はその置き場です。論理プロセッサ別のグラフと上位 5 は、CPU 詳細の「論理CPU」です。割合はその CPU の時間 ÷ 区間で、全体 CPU とは分母が違います。詳細分析は既定でオフです。
 
 ## 対応 OS
 
@@ -87,7 +87,7 @@ cargo build --release
 
 ## 必要な実行権限
 
-管理者として実行しないでください。`PROCESS_QUERY_LIMITED_INFORMATION` で足りる情報だけを読みます。開けないプロセスは一覧には残し、CPU とメモリを `N/A` にします。
+管理者として実行しないでください。`PROCESS_QUERY_LIMITED_INFORMATION` で足りる情報だけを読みます。開けないプロセスは一覧には残し、CPU とメモリを `N/A` にします。論理 CPU のプロセス分析は、CPU 詳細の「分析オン」のときだけ専用 ETW セッション `PULSE-CPU` を使います。権限が無ければその順位だけ `N/A` になり、他の機能は続きます。起動時に昇格はしません。「管理者として再起動」はボタンを押したときだけです。
 
 この版にプロセス終了機能はありません。
 
@@ -105,7 +105,8 @@ cargo build --release
 - プロセスの I/O は `GetProcessIoCounters` で、ファイル以外も含む。物理ディスクの速度とは別
 - プロセス別ネットワークは通常ユーザーでは取らない。画面は `要管理者`。アダプター速度は `GetIfTable2`
 - GPU 使用率はエンジン種別の最大。専用と共有は別。カウンタが無いときは `なし`、読めないときは `N/A`
-- 論理プロセッサ別ランキングは未実装
+- 論理プロセッサ別の割合は、その CPU 上の時間 ÷ 区間。全体 CPU（`GetSystemTimes`）とは別計算で、ETW の値で全体 CPU は置き換えない。権限不足、分析オフ、最初の区間、欠測は `N/A`
+- Windows 上の ETW セッションは CI では張れないため未検証。実機の数字は CPU ページの診断行（`DEMO` が無いもの）を見る。A は分析オフ、B は分析オンかつ全体、C は論理 CPU で時刻を固定
 - Windows 上のディスク、ネットワーク、GPU の数値は実機では未検証。CI は API が落ちないことまで
 - 詳細グラフは直近 60 秒。棒をクリックするとその時点の値と上位 5 を固定する。リングから落ちたあとも、選択中の 1 点だけは残る。60 秒より古い履歴をまとめて残すことはしない
 - ディスクのグラフは物理ディスク、順位はプロセス I/O。プロセス別ネットワークは通常ユーザーでは順位を作らない

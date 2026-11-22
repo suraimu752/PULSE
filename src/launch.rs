@@ -17,6 +17,12 @@ pub struct LaunchOptions {
     pub select_history: Option<i32>,
     /// Mock seconds to publish after pinning, so the point leaves the ring.
     pub age_history: Option<u32>,
+    /// Start on the per-logical-CPU view.
+    pub cpu_view_logical: bool,
+    /// Display index of the logical CPU to select once data exists.
+    pub select_cpu: Option<i32>,
+    /// `Some` forces detailed analysis on or off. `None` follows the demo.
+    pub cpu_detail_on: Option<bool>,
 }
 
 impl LaunchOptions {
@@ -32,7 +38,11 @@ impl LaunchOptions {
             resource: None,
             select_history: None,
             age_history: None,
+            cpu_view_logical: false,
+            select_cpu: None,
+            cpu_detail_on: None,
         };
+        let mut cpu_view_set = false;
         let mut args = std::env::args().skip(1);
         while let Some(arg) = args.next() {
             if arg == "--demo" {
@@ -43,7 +53,7 @@ impl LaunchOptions {
                 #[cfg(feature = "mock")]
                 {
                     crate::mock::Scenario::parse(&name).ok_or_else(|| {
-                        format!("未知のデモシナリオです: {name}（normal / many / gaps / special / history）")
+                        format!("未知のデモシナリオです: {name}（normal / many / gaps / special / history / cpus / cpus32 / cpus-denied）")
                     })?;
                     options.demo = Some(name);
                 }
@@ -136,6 +146,40 @@ impl LaunchOptions {
                     return Err("--age-history は 1 秒以上です".to_string());
                 }
                 options.age_history = Some(seconds);
+            } else if arg == "--cpu-view" {
+                let text = args.next().ok_or_else(|| {
+                    "--cpu-view の後に overall または logical が必要です".to_string()
+                })?;
+                options.cpu_view_logical = match text.as_str() {
+                    "overall" | "0" => false,
+                    "logical" | "1" => true,
+                    other => {
+                        return Err(format!(
+                            "未知の CPU 表示です: {other}（overall または logical）"
+                        ))
+                    }
+                };
+                cpu_view_set = true;
+            } else if arg == "--select-cpu" {
+                let text = args
+                    .next()
+                    .ok_or_else(|| "--select-cpu の後に番号が必要です".to_string())?;
+                let index: i32 = text
+                    .parse()
+                    .map_err(|_| format!("CPU 番号が整数ではありません: {text}"))?;
+                if index < 0 {
+                    return Err("CPU 番号は 0 以上です".to_string());
+                }
+                options.select_cpu = Some(index);
+            } else if arg == "--cpu-detail" {
+                let text = args
+                    .next()
+                    .ok_or_else(|| "--cpu-detail の後に on または off が必要です".to_string())?;
+                options.cpu_detail_on = Some(match text.as_str() {
+                    "on" | "1" => true,
+                    "off" | "0" => false,
+                    other => return Err(format!("未知の詳細分析です: {other}（on または off）")),
+                });
             } else if arg == "--help" || arg == "-h" {
                 return Err(help_text());
             } else {
@@ -147,6 +191,22 @@ impl LaunchOptions {
         }
         if options.age_history.is_some() && options.select_history.is_none() {
             return Err("--age-history には --select-history も必要です".to_string());
+        }
+        if options.cpu_detail_on.is_none()
+            && options
+                .demo
+                .as_deref()
+                .is_some_and(|name| matches!(name, "cpus" | "cpus32" | "cpus-denied"))
+        {
+            options.cpu_detail_on = Some(true);
+        }
+        if !cpu_view_set
+            && options
+                .demo
+                .as_deref()
+                .is_some_and(|name| matches!(name, "cpus" | "cpus32" | "cpus-denied"))
+        {
+            options.cpu_view_logical = true;
         }
         Ok(options)
     }
@@ -179,7 +239,7 @@ fn parse_size(text: &str) -> Result<(f32, f32), String> {
 }
 
 fn help_text() -> String {
-    "[--size 1280x720] [--page process|performance] [--theme light|dark|system] [--resource cpu|memory|disk|network|gpu3d|gpu-encode|gpu-decode|vram|shared] [--select-history N] [--age-history 秒] [--menu columns|resources] [--hide-column disk] [--hide-resource gpu-encode] [--demo normal|many|gaps|special|history]\n--demo は mock feature 付きの開発ビルドだけが受け付けます。--select-history は 60 秒軸の棒を一度だけ固定します。--age-history はその点を固定したあと、モックの時計だけを進め、リングから外れた選択を残します。列と資源の表示は %APPDATA%\\PULSE\\ui.cfg（Linux では ~/.config/PULSE/ui.cfg）に保存します。".to_string()
+    "[--size 1280x720] [--page process|performance] [--theme light|dark|system] [--resource cpu|memory|disk|network|gpu3d|gpu-encode|gpu-decode|vram|shared] [--select-history N] [--age-history 秒] [--cpu-view overall|logical] [--select-cpu N] [--cpu-detail on|off] [--menu columns|resources] [--hide-column disk] [--hide-resource gpu-encode] [--demo normal|many|gaps|special|history|cpus|cpus32|cpus-denied]\n--demo は mock feature 付きの開発ビルドだけが受け付けます。--select-history は 60 秒軸の棒を一度だけ固定します。--age-history はその点を固定したあと、モックの時計だけを進め、リングから外れた選択を残します。--cpu-view logical は論理プロセッサ別のグラフです。--cpu-detail は ETW の詳細分析です。列と資源の表示は %APPDATA%\\PULSE\\ui.cfg（Linux では ~/.config/PULSE/ui.cfg）に保存します。".to_string()
 }
 
 #[cfg(test)]

@@ -653,6 +653,7 @@ component HistoryGraph inherits Rectangle {
     in-out property <int> hover-index: -1;
     callback picked(int);
     callback hovered(int);
+    in property <bool> compact: false;
     min-width: 0px;
     preferred-width: 0px;
     horizontal-stretch: 1;
@@ -669,7 +670,7 @@ component HistoryGraph inherits Rectangle {
             vertical-stretch: 1;
             min-height: 0px;
             VerticalLayout {
-                width: 64px;
+                width: root.compact ? 0px : 64px;
                 Text {
                     text: root.axis-high;
                     font-size: 11px;
@@ -738,10 +739,10 @@ component HistoryGraph inherits Rectangle {
             }
         }
         HorizontalLayout {
-            height: 18px;
-            Text { text: "60秒前"; font-size: 11px; color: Theme.text-muted; }
+            height: root.compact ? 0px : 18px;
+            Text { text: root.compact ? "" : "60秒前"; font-size: 11px; color: Theme.text-muted; }
             Rectangle { horizontal-stretch: 1; }
-            Text { text: "現在"; font-size: 11px; color: Theme.text-muted; }
+            Text { text: root.compact ? "" : "現在"; font-size: 11px; color: Theme.text-muted; }
         }
     }
 }
@@ -892,6 +893,13 @@ component ThemeSwitch inherits Rectangle {
     }
 }
 
+export struct CpuCard {
+    label: string,
+    usage: string,
+    kind: int,
+    selected: bool,
+}
+
 export component AppWindow inherits Window {
     title: "PULSE";
     preferred-width: 1280px;
@@ -960,6 +968,20 @@ export component AppWindow inherits Window {
     callback history-hovered(int);
     callback history-live();
     callback gpu-picked(int);
+    callback cpu-header(int);
+    callback cpu-bar(int, int);
+    callback cpu-view-set(int);
+    callback cpu-detail-toggle();
+    callback cpu-elevate();
+    in-out property <[float]> cpu-series;
+    in-out property <[int]> cpu-slots;
+    in property <int> cpu-stride: 120;
+    in-out property <int> cpu-view: 0;
+    in-out property <bool> cpu-detail-on: false;
+    in-out property <string> cpu-diagnostics: "";
+    in-out property <string> cpu-message: "";
+    in-out property <bool> cpu-admin: false;
+    in-out property <[CpuCard]> cpu-cards;
     in-out property <bool> history-pinned: false;
     in-out property <string> history-when: "";
     in-out property <string> history-age: "";
@@ -1577,12 +1599,215 @@ export component AppWindow inherits Window {
                                             color: Theme.text-secondary;
                                             wrap: word-wrap;
                                         }
-                                        if root.detail-graph: detail-graph := HistoryGraph {
+                                        if root.resource == 0: HorizontalLayout {
+                                            spacing: 4px;
+                                            height: 28px;
+                                            cpu-overall := TouchArea {
+                                                horizontal-stretch: 1;
+                                                accessible-role: button;
+                                                accessible-label: "全体表示";
+                                                clicked => { root.cpu-view-set(0); }
+                                                Rectangle {
+                                                    width: 100%;
+                                                    height: 100%;
+                                                    border-radius: 6px;
+                                                    border-width: 1px;
+                                                    border-color: root.cpu-view == 0 ? Theme.accent : Theme.line;
+                                                    background: root.cpu-view == 0 ? Theme.nav-selected : Theme.chip;
+                                                    Text {
+                                                        width: 100%;
+                                                        height: 100%;
+                                                        text: "全体";
+                                                        font-size: 12px;
+                                                        font-weight: root.cpu-view == 0 ? 600 : 400;
+                                                        color: root.cpu-view == 0 ? Theme.accent-text : Theme.text-secondary;
+                                                        horizontal-alignment: center;
+                                                        vertical-alignment: center;
+                                                    }
+                                                }
+                                            }
+                                            cpu-logical := TouchArea {
+                                                horizontal-stretch: 1;
+                                                accessible-role: button;
+                                                accessible-label: "論理プロセッサ別表示";
+                                                clicked => { root.cpu-view-set(1); }
+                                                Rectangle {
+                                                    width: 100%;
+                                                    height: 100%;
+                                                    border-radius: 6px;
+                                                    border-width: 1px;
+                                                    border-color: root.cpu-view == 1 ? Theme.accent : Theme.line;
+                                                    background: root.cpu-view == 1 ? Theme.nav-selected : Theme.chip;
+                                                    Text {
+                                                        width: 100%;
+                                                        height: 100%;
+                                                        text: "論理CPU";
+                                                        font-size: 12px;
+                                                        font-weight: root.cpu-view == 1 ? 600 : 400;
+                                                        color: root.cpu-view == 1 ? Theme.accent-text : Theme.text-secondary;
+                                                        horizontal-alignment: center;
+                                                        vertical-alignment: center;
+                                                        overflow: elide;
+                                                    }
+                                                }
+                                            }
+                                            cpu-switch := TouchArea {
+                                                horizontal-stretch: 1;
+                                                accessible-role: button;
+                                                accessible-label: "詳細なCPU分析";
+                                                clicked => { root.cpu-detail-toggle(); }
+                                                Rectangle {
+                                                    width: 100%;
+                                                    height: 100%;
+                                                    border-radius: 6px;
+                                                    border-width: 1px;
+                                                    border-color: root.cpu-detail-on ? Theme.accent : Theme.line;
+                                                    background: root.cpu-detail-on ? Theme.nav-selected : Theme.chip;
+                                                    Text {
+                                                        width: 100%;
+                                                        height: 100%;
+                                                        text: root.cpu-detail-on ? "分析オン" : "分析オフ";
+                                                        font-size: 12px;
+                                                        font-weight: 600;
+                                                        color: root.cpu-detail-on ? Theme.accent-text : Theme.text-secondary;
+                                                        horizontal-alignment: center;
+                                                        vertical-alignment: center;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        if root.resource == 0 && root.cpu-diagnostics != "": Text {
+                                            text: root.cpu-diagnostics;
+                                            font-size: 11px;
+                                            color: Theme.text-muted;
+                                            wrap: root.cpu-view == 1 ? word-wrap : no-wrap;
+                                            overflow: elide;
+                                            max-height: root.height < 680px && root.cpu-view == 0 ? 16px : 48px;
+                                        }
+                                        if root.resource == 0 && root.cpu-view == 1 && root.cpu-message != "": Text {
+                                            text: root.cpu-message;
+                                            font-size: 12px;
+                                            color: Theme.text-secondary;
+                                            wrap: word-wrap;
+                                        }
+                                        if root.cpu-admin: cpu-admin-button := TouchArea {
+                                            width: 168px;
+                                            height: 28px;
+                                            horizontal-stretch: 0;
+                                            accessible-role: button;
+                                            accessible-label: "管理者として再起動";
+                                            clicked => { root.cpu-elevate(); }
+                                            Rectangle {
+                                                width: 100%;
+                                                height: 100%;
+                                                border-radius: 6px;
+                                                border-width: 1px;
+                                                border-color: Theme.line;
+                                                background: cpu-admin-button.pressed ? Theme.nav-pressed : Theme.card;
+                                                Text {
+                                                    width: 100%;
+                                                    height: 100%;
+                                                    text: "管理者として再起動";
+                                                    font-size: 12px;
+                                                    color: Theme.text;
+                                                    horizontal-alignment: center;
+                                                    vertical-alignment: center;
+                                                }
+                                            }
+                                        }
+                                        if root.resource == 0 && root.cpu-view == 1 && root.cpu-cards.length > 0: Rectangle {
+                                            property <int> columns: parent.width < 520px ? 2 : 4;
+                                            property <length> tile-h: 104px;
+                                            property <int> rows: Math.floor((root.cpu-cards.length + columns - 1) / columns);
+                                            height: rows * tile-h;
+                                            for card[i] in root.cpu-cards: cpu-tile := Rectangle {
+                                                property <length> tile-w: (parent.width - (columns - 1) * 6px) / columns;
+                                                x: Math.mod(i, columns) * (tile-w + 6px);
+                                                y: Math.floor(i / columns) * tile-h;
+                                                width: tile-w;
+                                                height: tile-h - 6px;
+                                                border-radius: 8px;
+                                                border-width: card.selected ? 2px : 1px;
+                                                border-color: card.selected ? Theme.accent : Theme.line;
+                                                background: Theme.card;
+                                                clip: true;
+                                                property <bool> on-screen: self.absolute-position.y + self.height > detail-flick.absolute-position.y - 120px && self.absolute-position.y < detail-flick.absolute-position.y + detail-flick.height + 120px;
+                                                VerticalLayout {
+                                                    padding: 4px;
+                                                    spacing: 2px;
+                                                    cpu-head := TouchArea {
+                                                        height: 20px;
+                                                        accessible-role: button;
+                                                        accessible-label: card.label;
+                                                        clicked => { root.cpu-header(i); }
+                                                        HorizontalLayout {
+                                                            Text {
+                                                                text: card.label;
+                                                                font-size: 12px;
+                                                                font-weight: 600;
+                                                                color: Theme.text;
+                                                                vertical-alignment: center;
+                                                            }
+                                                            Rectangle { horizontal-stretch: 1; }
+                                                            Text {
+                                                                text: card.usage;
+                                                                font-size: 12px;
+                                                                color: card.kind == 2 ? Theme.unavailable : Theme.accent;
+                                                                horizontal-alignment: right;
+                                                                vertical-alignment: center;
+                                                            }
+                                                        }
+                                                    }
+                                                    if cpu-tile.on-screen: Rectangle {
+                                                        horizontal-stretch: 1;
+                                                        min-width: 0px;
+                                                        height: 64px;
+                                                        background: Theme.graph-plot;
+                                                        border-width: 1px;
+                                                        border-color: Theme.graph-border;
+                                                        clip: true;
+                                                        HorizontalLayout {
+                                                            padding: 2px;
+                                                            for dummy[index] in root.cpu-slots: Rectangle {
+                                                                horizontal-stretch: 1;
+                                                                min-width: 0px;
+                                                                preferred-width: 0px;
+                                                                property <float> value: root.cpu-series[i * root.cpu-stride + index];
+                                                                bar-touch := TouchArea {
+                                                                    accessible-role: button;
+                                                                    accessible-label: card.label;
+                                                                    clicked => { root.cpu-bar(i, index); }
+                                                                    changed has-hover => {
+                                                                        if (self.has-hover) {
+                                                                            root.history-hovered(index);
+                                                                        } else {
+                                                                            root.history-hovered(-1);
+                                                                        }
+                                                                    }
+                                                                    Rectangle {
+                                                                        y: parent.height - self.height;
+                                                                        width: 100%;
+                                                                        height: value < 0 ? 0px : parent.height * min(max(value, 0), 100) / 100;
+                                                                        background: root.history-cursor == index ? Theme.accent-text : Theme.graph-bar;
+                                                                    }
+                                                                }
+                                                                if root.history-cursor == index: Rectangle {
+                                                                    width: 2px;
+                                                                    height: 100%;
+                                                                    background: Theme.accent;
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        if root.detail-graph && (root.resource != 0 || root.cpu-view == 0): detail-graph := HistoryGraph {
                                             horizontal-stretch: 1;
                                             preferred-width: 0px;
                                             min-width: 0px;
                                             // 800x600 must still show the five ranking rows under the graph.
-                                            height: root.height < 680px ? 104px : 220px;
+                                            height: root.height < 680px ? 88px : 220px;
                                             points: root.detail-points;
                                             axis-high: root.graph-axis-high;
                                             axis-low: root.graph-axis-low;
