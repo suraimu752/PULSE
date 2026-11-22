@@ -35,6 +35,7 @@ pub fn aggregate(previous: Option<&RawSample>, current: &RawSample) -> Snapshot 
 
     Snapshot {
         sequence: 0,
+        monotonic: current.taken_at,
         taken_at: current.wall_time,
         interval: elapsed,
         logical_processors: current.logical_processors,
@@ -108,6 +109,7 @@ fn process_snapshot(
         gpu_decode_percent: process.gpu_decode_percent,
         vram_dedicated_bytes: process.vram_dedicated_bytes,
         vram_shared_bytes: process.vram_shared_bytes,
+        gpus: process.gpus.clone(),
     }
 }
 

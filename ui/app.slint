@@ -47,7 +47,9 @@ export global Theme {
 export enum CellKind { value, zero, unavailable, unsupported }
 
 export struct TopRow {
+    rank: string,
     name: string,
+    pid: string,
     value: string,
     kind: int,
 }
@@ -590,7 +592,9 @@ component HistoryGraph inherits Rectangle {
     in property <string> axis-high: "100%";
     in property <string> axis-low: "0";
     in property <int> cursor: -1;
+    in-out property <int> hover-index: -1;
     callback picked(int);
+    callback hovered(int);
     height: 220px;
     min-width: 0px;
     preferred-width: 0px;
@@ -646,7 +650,18 @@ component HistoryGraph inherits Rectangle {
                         preferred-width: 0px;
                         vertical-stretch: 1;
                         bar-touch := TouchArea {
+                            accessible-role: button;
+                            accessible-label: "履歴";
                             clicked => { root.picked(index); }
+                            changed has-hover => {
+                                if (self.has-hover) {
+                                    root.hover-index = index;
+                                    root.hovered(index);
+                                } else if (root.hover-index == index) {
+                                    root.hover-index = -1;
+                                    root.hovered(-1);
+                                }
+                            }
                             Rectangle {
                                 y: parent.height - self.height;
                                 width: 100%;
@@ -655,6 +670,13 @@ component HistoryGraph inherits Rectangle {
                             }
                         }
                     }
+                }
+                if root.cursor >= 0 && root.points.length > 0: Rectangle {
+                    x: 4px + (parent.width - 8px) * (root.cursor + 0.5) / root.points.length - 1px;
+                    y: 0px;
+                    width: 2px;
+                    height: 100%;
+                    background: Theme.accent;
                 }
             }
         }
@@ -878,6 +900,16 @@ export component AppWindow inherits Window {
     callback resource-requested(int);
     // Phase 3 can recompute the top list from this index. The live values stay current.
     callback history-picked(int);
+    callback history-hovered(int);
+    callback history-live();
+    callback gpu-picked(int);
+    in-out property <bool> history-pinned: false;
+    in-out property <string> history-label: "";
+    in-out property <string> history-hover: "";
+    in-out property <string> rank-caption: "この時点の上位プロセス";
+    in-out property <string> rank-empty: "実測値のあるプロセスはありません。";
+    in-out property <[string]> gpu-names;
+    in-out property <int> gpu-choice: -1;
     callback column-toggled(int);
     callback column-moved(int, int);
     callback column-dragged(int, length);
@@ -1493,19 +1525,90 @@ export component AppWindow inherits Window {
                                             axis-high: root.graph-axis-high;
                                             axis-low: root.graph-axis-low;
                                             cursor: root.history-cursor;
-                                            picked(index) => {
-                                                root.history-cursor = index;
-                                                root.history-picked(index);
+                                            picked(index) => { root.history-picked(index); }
+                                            hovered(index) => { root.history-hovered(index); }
+                                        }
+                                        HorizontalLayout {
+                                            spacing: 8px;
+                                            alignment: start;
+                                            if root.history-pinned: live-return := TouchArea {
+                                                width: 120px;
+                                                height: 28px;
+                                                horizontal-stretch: 0;
+                                                accessible-role: button;
+                                                accessible-label: "ライブに戻る";
+                                                clicked => { root.history-live(); }
+                                                Rectangle {
+                                                    width: 100%;
+                                                    height: 100%;
+                                                    border-radius: 6px;
+                                                    border-width: 1px;
+                                                    border-color: live-return.has-hover ? Theme.accent : Theme.line;
+                                                    background: live-return.pressed ? Theme.nav-pressed : Theme.card;
+                                                    Text {
+                                                        width: 100%;
+                                                        height: 100%;
+                                                        text: "ライブに戻る";
+                                                        font-size: 12px;
+                                                        font-weight: 600;
+                                                        color: Theme.text;
+                                                        horizontal-alignment: center;
+                                                        vertical-alignment: center;
+                                                    }
+                                                }
+                                            }
+                                            Text {
+                                                text: root.history-label;
+                                                font-size: 12px;
+                                                color: Theme.text-secondary;
+                                                vertical-alignment: center;
+                                                wrap: word-wrap;
+                                            }
+                                        }
+                                        if root.history-hover != "": Text {
+                                            text: root.history-hover;
+                                            font-size: 12px;
+                                            color: Theme.text-muted;
+                                            wrap: word-wrap;
+                                        }
+                                        if root.gpu-names.length > 0: HorizontalLayout {
+                                            spacing: 4px;
+                                            height: 28px;
+                                            for name[index] in root.gpu-names: gpu-chip := TouchArea {
+                                                horizontal-stretch: 1;
+                                                accessible-role: button;
+                                                accessible-label: name;
+                                                clicked => { root.gpu-picked(index); }
+                                                Rectangle {
+                                                    width: 100%;
+                                                    height: 100%;
+                                                    border-radius: 6px;
+                                                    border-width: 1px;
+                                                    border-color: root.gpu-choice == index ? Theme.accent : Theme.line;
+                                                    background: gpu-chip.pressed ? Theme.nav-pressed : root.gpu-choice == index ? Theme.nav-selected : Theme.chip;
+                                                    Text {
+                                                        width: 100%;
+                                                        height: 100%;
+                                                        text: name;
+                                                        font-size: 11px;
+                                                        font-weight: root.gpu-choice == index ? 600 : 400;
+                                                        color: root.gpu-choice == index ? Theme.accent-text : Theme.text-secondary;
+                                                        horizontal-alignment: center;
+                                                        vertical-alignment: center;
+                                                        overflow: elide;
+                                                    }
+                                                }
                                             }
                                         }
                                         Text {
-                                            text: "上位プロセス";
+                                            text: root.rank-caption;
                                             font-size: 13px;
                                             font-weight: 600;
                                             color: Theme.text;
+                                            wrap: word-wrap;
                                         }
                                         if root.top-rows.length == 0: Text {
-                                            text: "この資源の上位プロセスはありません。";
+                                            text: root.rank-empty;
                                             font-size: 12px;
                                             color: Theme.text-muted;
                                             wrap: word-wrap;
@@ -1514,10 +1617,27 @@ export component AppWindow inherits Window {
                                             height: 22px;
                                             spacing: 8px;
                                             Text {
+                                                text: row.rank;
+                                                width: 18px;
+                                                horizontal-stretch: 0;
+                                                font-size: 13px;
+                                                color: Theme.text-muted;
+                                                vertical-alignment: center;
+                                            }
+                                            Text {
                                                 text: row.name;
                                                 font-size: 13px;
                                                 color: Theme.text;
                                                 overflow: elide;
+                                                vertical-alignment: center;
+                                            }
+                                            Text {
+                                                text: row.pid;
+                                                width: 64px;
+                                                horizontal-stretch: 0;
+                                                font-size: 13px;
+                                                color: Theme.text-secondary;
+                                                horizontal-alignment: right;
                                                 vertical-alignment: center;
                                             }
                                             Text {
@@ -1535,7 +1655,7 @@ export component AppWindow inherits Window {
                                             wrap: word-wrap;
                                         }
                                         Text {
-                                            text: "グラフの棒をクリックすると位置だけを覚えます。過去時点の上位プロセスの再計算は、全プロセスの履歴が残っているので後から足せます。表示中も計測は続きます。";
+                                            text: "棒に触れると時刻と値だけを予告します。クリックするとその計測を固定し、上位 5 件はその記録だけから計算します。計測は続き、ライブに戻るまで選択は動きません。";
                                             font-size: 12px;
                                             color: Theme.text-muted;
                                             wrap: word-wrap;

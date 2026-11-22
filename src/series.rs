@@ -7,6 +7,8 @@
 #[cfg(feature = "ui")]
 use crate::format::{format_bytes, format_bytes_per_sec};
 use crate::metric::MetricValue;
+#[cfg(feature = "ui")]
+use crate::model::ResourceId;
 use crate::model::Snapshot;
 
 #[derive(Clone, Debug)]
@@ -84,6 +86,97 @@ pub fn chart_history<'a>(
             }),
             capacity,
         ),
+    }
+}
+
+/// Detail-graph points for one resource. `None` is a gap, not zero.
+/// A GPU adapter that is missing from a snapshot stays a gap. It is not
+/// replaced with another adapter's max.
+#[cfg(feature = "ui")]
+pub fn graph_points<'a>(
+    samples: impl Iterator<Item = Option<&'a Snapshot>>,
+    capacity: usize,
+    resource: ResourceId,
+    adapter: Option<u64>,
+) -> Vec<Option<f64>> {
+    align(
+        samples.map(|sample| sample.and_then(|sample| point(sample, resource, adapter))),
+        capacity,
+    )
+}
+
+#[cfg(feature = "ui")]
+fn point(snapshot: &Snapshot, resource: ResourceId, adapter: Option<u64>) -> Option<f64> {
+    match resource {
+        ResourceId::Cpu => snapshot.cpu_percent.as_option(),
+        ResourceId::Memory => memory_percent(snapshot),
+        ResourceId::Disk => sum_rates(snapshot.disk_read_bps, snapshot.disk_write_bps),
+        ResourceId::Network => sum_rates(snapshot.net_recv_bps, snapshot.net_send_bps),
+        ResourceId::Gpu3d => adapter_percent(
+            snapshot,
+            adapter,
+            |gpu| gpu.util_3d,
+            |sample| sample.gpu_3d_percent,
+        ),
+        ResourceId::GpuEncode => adapter_percent(
+            snapshot,
+            adapter,
+            |gpu| gpu.util_encode,
+            |sample| sample.gpu_encode_percent,
+        ),
+        ResourceId::GpuDecode => adapter_percent(
+            snapshot,
+            adapter,
+            |gpu| gpu.util_decode,
+            |sample| sample.gpu_decode_percent,
+        ),
+        ResourceId::VramDedicated => adapter_bytes(
+            snapshot,
+            adapter,
+            |gpu| gpu.dedicated_bytes,
+            |sample| sample.vram_dedicated_bytes,
+        ),
+        ResourceId::VramShared => adapter_bytes(
+            snapshot,
+            adapter,
+            |gpu| gpu.shared_bytes,
+            |sample| sample.vram_shared_bytes,
+        ),
+    }
+}
+
+#[cfg(feature = "ui")]
+fn adapter_percent(
+    snapshot: &Snapshot,
+    adapter: Option<u64>,
+    adapter_value: impl Fn(&crate::model::GpuAdapter) -> MetricValue<f64>,
+    system_value: impl Fn(&Snapshot) -> MetricValue<f64>,
+) -> Option<f64> {
+    match adapter {
+        Some(luid) => snapshot
+            .gpus
+            .iter()
+            .find(|gpu| gpu.luid == luid)
+            .and_then(|gpu| adapter_value(gpu).as_option()),
+        None => system_value(snapshot).as_option(),
+    }
+}
+
+#[cfg(feature = "ui")]
+fn adapter_bytes(
+    snapshot: &Snapshot,
+    adapter: Option<u64>,
+    adapter_value: impl Fn(&crate::model::GpuAdapter) -> MetricValue<u64>,
+    system_value: impl Fn(&Snapshot) -> MetricValue<u64>,
+) -> Option<f64> {
+    match adapter {
+        Some(luid) => snapshot
+            .gpus
+            .iter()
+            .find(|gpu| gpu.luid == luid)
+            .and_then(|gpu| adapter_value(gpu).as_option())
+            .map(|bytes| bytes as f64),
+        None => system_value(snapshot).as_option().map(|bytes| bytes as f64),
     }
 }
 

@@ -11,6 +11,10 @@ pub struct LaunchOptions {
     pub menu: Option<String>,
     pub hide_column: Option<String>,
     pub hide_resource: Option<String>,
+    /// Performance resource index. `None` leaves CPU.
+    pub resource: Option<i32>,
+    /// One-shot history bar to pin after the first snapshot. Screenshot aid.
+    pub select_history: Option<i32>,
 }
 
 impl LaunchOptions {
@@ -23,17 +27,20 @@ impl LaunchOptions {
             menu: None,
             hide_column: None,
             hide_resource: None,
+            resource: None,
+            select_history: None,
         };
         let mut args = std::env::args().skip(1);
         while let Some(arg) = args.next() {
             if arg == "--demo" {
                 let name = args.next().ok_or_else(|| {
-                    "--demo の後に normal、many、gaps、special のいずれかが必要です".to_string()
+                    "--demo の後に normal、many、gaps、special、history のいずれかが必要です"
+                        .to_string()
                 })?;
                 #[cfg(feature = "mock")]
                 {
                     crate::mock::Scenario::parse(&name).ok_or_else(|| {
-                        format!("未知のデモシナリオです: {name}（normal / many / gaps / special）")
+                        format!("未知のデモシナリオです: {name}（normal / many / gaps / special / history）")
                     })?;
                     options.demo = Some(name);
                 }
@@ -97,6 +104,24 @@ impl LaunchOptions {
                     .next()
                     .ok_or_else(|| "--hide-resource の後に資源名が必要です".to_string())?;
                 options.hide_resource = Some(text);
+            } else if arg == "--resource" {
+                let text = args.next().ok_or_else(|| {
+                    "--resource の後に cpu / memory / disk / network / gpu3d / gpu-encode / gpu-decode / vram / shared が必要です".to_string()
+                })?;
+                let resource = crate::model::ResourceId::parse(&text)
+                    .ok_or_else(|| format!("未知の資源です: {text}"))?;
+                options.resource = Some(resource as i32);
+            } else if arg == "--select-history" {
+                let text = args
+                    .next()
+                    .ok_or_else(|| "--select-history の後に棒の番号が必要です".to_string())?;
+                let index: i32 = text
+                    .parse()
+                    .map_err(|_| format!("棒の番号が整数ではありません: {text}"))?;
+                if index < 0 {
+                    return Err("棒の番号は 0 以上です".to_string());
+                }
+                options.select_history = Some(index);
             } else if arg == "--help" || arg == "-h" {
                 return Err(help_text());
             } else {
@@ -124,7 +149,7 @@ fn parse_size(text: &str) -> Result<(f32, f32), String> {
 }
 
 fn help_text() -> String {
-    "[--size 1280x720] [--page process|performance] [--theme light|dark|system] [--menu columns|resources] [--hide-column disk] [--hide-resource gpu-encode] [--demo normal|many|gaps|special]\n--demo は mock feature 付きの開発ビルドだけが受け付けます。列と資源の表示は %APPDATA%\\PULSE\\ui.cfg（Linux では ~/.config/PULSE/ui.cfg）に保存します。".to_string()
+    "[--size 1280x720] [--page process|performance] [--theme light|dark|system] [--resource cpu|memory|disk|network|gpu3d|gpu-encode|gpu-decode|vram|shared] [--select-history N] [--menu columns|resources] [--hide-column disk] [--hide-resource gpu-encode] [--demo normal|many|gaps|special|history]\n--demo は mock feature 付きの開発ビルドだけが受け付けます。--select-history は 60 秒軸の棒を一度だけ固定します。列と資源の表示は %APPDATA%\\PULSE\\ui.cfg（Linux では ~/.config/PULSE/ui.cfg）に保存します。".to_string()
 }
 
 #[cfg(test)]

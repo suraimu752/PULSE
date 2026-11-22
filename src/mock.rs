@@ -10,7 +10,9 @@ use std::time::{Duration, Instant, SystemTime};
 use crate::collector::SystemProbe;
 use crate::gpuagg::fold_engine_percents;
 use crate::metric::MetricValue;
-use crate::model::{GpuAdapter, GpuPresence, NamedRate, ProcessNetMode, RawProcess, RawSample};
+use crate::model::{
+    GpuAdapter, GpuPresence, NamedRate, ProcessGpu, ProcessNetMode, RawProcess, RawSample,
+};
 
 const STEP: Duration = Duration::from_millis(500);
 const PROCESSORS: u32 = 8;
@@ -22,6 +24,8 @@ pub enum Scenario {
     Many,
     Gaps,
     Special,
+    /// Scripted 60-second story for history selection screenshots.
+    History,
 }
 
 impl Scenario {
@@ -31,6 +35,7 @@ impl Scenario {
             "many" => Some(Self::Many),
             "gaps" => Some(Self::Gaps),
             "special" => Some(Self::Special),
+            "history" => Some(Self::History),
             _ => None,
         }
     }
@@ -104,7 +109,7 @@ impl SystemProbe for MockProbe {
         sample.gpu_presence = GpuPresence::Present;
         sample.process_net = ProcessNetMode::Attributed;
 
-        let percent = system_cpu_percent(step);
+        let percent = system_cpu_percent(self.scenario, step);
         let total_delta = TICKS_100NS.saturating_mul(u64::from(PROCESSORS));
         let busy_delta = ((total_delta as f64) * percent / 100.0).round() as u64;
         self.system_total = self.system_total.saturating_add(total_delta);
@@ -152,11 +157,6 @@ impl SystemProbe for MockProbe {
                 Reading::Unavailable => MetricValue::Unavailable,
                 Reading::Unsupported => MetricValue::Unsupported,
             };
-            process.memory_bytes = if actor.memory == u64::MAX {
-                MetricValue::Unavailable
-            } else {
-                MetricValue::Value(actor.memory)
-            };
             let disk_rate = disk_bytes_per_step(step, actor.weight);
             process.disk_read_bytes = advance(&mut slot.disk_read, disk_rate, actor.disk);
             process.disk_write_bytes = advance(&mut slot.disk_write, disk_rate / 4, actor.disk);
@@ -171,8 +171,38 @@ impl SystemProbe for MockProbe {
             process.gpu_encode_percent =
                 fold_engine_percents([(actor.weight * 1.5 + (step as f64 % 7.0)).clamp(0.0, 40.0)]);
             process.gpu_decode_percent = MetricValue::Value(0.0);
-            process.vram_dedicated_bytes = MetricValue::Value(actor.memory / 8);
-            process.vram_shared_bytes = MetricValue::Value(actor.memory / 20);
+            let memory = if self.scenario == Scenario::History && actor.pid == 2008 {
+                8 * 1024 * 1024 + step.saturating_mul(512 * 1024)
+            } else {
+                actor.memory
+            };
+            if memory == u64::MAX {
+                process.memory_bytes = MetricValue::Unavailable;
+                process.vram_dedicated_bytes = MetricValue::Unavailable;
+                process.vram_shared_bytes = MetricValue::Unavailable;
+            } else {
+                process.memory_bytes = MetricValue::Value(memory);
+                process.vram_dedicated_bytes = MetricValue::Value(memory / 8);
+                process.vram_shared_bytes = MetricValue::Value(memory / 20);
+            }
+            let gpu3d = process.gpu_3d_percent;
+            process.gpus = adapter_rows(
+                self.scenario,
+                actor.pid,
+                gpu3d,
+                process.gpu_encode_percent,
+                process.gpu_decode_percent,
+                process.vram_dedicated_bytes,
+                process.vram_shared_bytes,
+            );
+            if let Some(max) = process
+                .gpus
+                .iter()
+                .filter_map(|gpu| gpu.gpu_3d_percent.as_option())
+                .reduce(f64::max)
+            {
+                process.gpu_3d_percent = MetricValue::Value(max);
+            }
             sample.processes.push(process);
         }
 
@@ -197,7 +227,7 @@ fn fill_devices(sample: &mut RawSample, scenario: Scenario, step: u64) {
     let physical_read = physical_disk_read(step);
     let physical_write = physical_read * 0.35;
     let (disks, adapters, gpus) = match scenario {
-        Scenario::Special => (
+        Scenario::Special | Scenario::History => (
             vec![
                 named("ディスク 0", physical_read * 0.7, physical_write * 0.7),
                 named("ディスク 1", physical_read * 0.3, physical_write * 0.3),
@@ -283,8 +313,13 @@ fn sum_bytes(values: impl Iterator<Item = MetricValue<u64>>) -> MetricValue<u64>
     }
 }
 
-fn system_cpu_percent(step: u64) -> f64 {
+fn system_cpu_percent(scenario: Scenario, step: u64) -> f64 {
     let t = step as f64;
+    if scenario == Scenario::History {
+        // A clear spike 30 seconds before the end of the 120-slot warmup.
+        let peak = 78.0 * (-((t - 59.0) / 3.5).powi(2)).exp();
+        return (10.0 + peak).clamp(2.0, 96.0);
+    }
     let base = 18.0 + 7.0 * (t / 8.0).sin();
     let peak = 70.0 * (-((t - 90.0) / 6.0).powi(2)).exp();
     (base + peak).clamp(2.0, 96.0)
@@ -319,13 +354,159 @@ fn net_bytes_per_step(step: u64, weight: f64) -> u64 {
     (weight * 40_000.0 * (1.0 + ((step as f64) / 9.0).sin().abs())) as u64
 }
 
+fn adapter_rows(
+    scenario: Scenario,
+    pid: u32,
+    gpu_3d: MetricValue<f64>,
+    encode: MetricValue<f64>,
+    decode: MetricValue<f64>,
+    dedicated: MetricValue<u64>,
+    shared: MetricValue<u64>,
+) -> Vec<ProcessGpu> {
+    let row = |luid: u64, gpu_3d: MetricValue<f64>| ProcessGpu {
+        luid,
+        gpu_3d_percent: gpu_3d,
+        gpu_encode_percent: encode,
+        gpu_decode_percent: decode,
+        vram_dedicated_bytes: dedicated,
+        vram_shared_bytes: shared,
+    };
+    match scenario {
+        Scenario::Special | Scenario::History => {
+            let high = gpu_3d;
+            let low = match gpu_3d {
+                MetricValue::Value(value) => MetricValue::Value((value * 0.1).clamp(0.0, 100.0)),
+                other => other,
+            };
+            if pid.is_multiple_of(2) {
+                vec![row(0x11, low), row(0x22, high)]
+            } else {
+                vec![row(0x11, high), row(0x22, low)]
+            }
+        }
+        _ => vec![row(0x11, gpu_3d)],
+    }
+}
+
 fn actors(scenario: Scenario) -> Vec<Actor> {
     match scenario {
         Scenario::Normal => crowd(100, false),
         Scenario::Many => crowd(1000, true),
         Scenario::Gaps => gaps(),
         Scenario::Special => special(),
+        Scenario::History => history_cast(),
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn history_actor(
+    name: &str,
+    pid: u32,
+    creation: u64,
+    weight: f64,
+    memory: u64,
+    cpu: Reading,
+    born_at: u64,
+    dies_at: Option<u64>,
+) -> Actor {
+    Actor {
+        pid,
+        creation,
+        name: name.to_string(),
+        weight,
+        memory,
+        cpu,
+        disk: Reading::Live,
+        net: Reading::Live,
+        gpu_engines: &[40.0],
+        born_at,
+        dies_at,
+    }
+}
+
+fn history_cast() -> Vec<Actor> {
+    vec![
+        history_actor(
+            "spike.exe",
+            2001,
+            11,
+            40.0,
+            32 * 1024 * 1024,
+            Reading::Live,
+            0,
+            None,
+        ),
+        history_actor(
+            "steady.exe",
+            2002,
+            12,
+            4.0,
+            20 * 1024 * 1024,
+            Reading::Live,
+            0,
+            None,
+        ),
+        history_actor(
+            "gone.exe",
+            2003,
+            13,
+            28.0,
+            16 * 1024 * 1024,
+            Reading::Live,
+            0,
+            Some(80),
+        ),
+        history_actor(
+            "reused-before.exe",
+            4242,
+            100,
+            6.0,
+            12 * 1024 * 1024,
+            Reading::Live,
+            0,
+            Some(40),
+        ),
+        history_actor(
+            "reused-after.exe",
+            4242,
+            900,
+            3.0,
+            8 * 1024 * 1024,
+            Reading::Live,
+            50,
+            None,
+        ),
+        history_actor(
+            "unreadable.exe",
+            2006,
+            16,
+            1.0,
+            u64::MAX,
+            Reading::Unavailable,
+            0,
+            None,
+        ),
+        history_actor(
+            "idle.exe",
+            2007,
+            17,
+            1.0,
+            4 * 1024 * 1024,
+            Reading::Zero,
+            0,
+            None,
+        ),
+        history_actor(
+            "grow.exe",
+            2008,
+            18,
+            2.0,
+            8 * 1024 * 1024,
+            Reading::Live,
+            0,
+            None,
+        ),
+    ]
 }
 
 fn crowd(count: u32, long_names: bool) -> Vec<Actor> {

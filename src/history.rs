@@ -1,6 +1,10 @@
 //! Fixed-capacity ring buffer. Pushing past capacity drops the oldest item.
 //! The buffer does not allocate on later pushes after construction.
 
+use std::sync::Arc;
+
+use crate::model::Snapshot;
+
 /// Oldest-to-newest ring of at most `capacity` items.
 #[derive(Clone, Debug)]
 pub struct RingBuffer<T> {
@@ -59,6 +63,27 @@ impl<T> RingBuffer<T> {
                 .expect("occupied ring slot is missing")
         })
     }
+}
+
+/// Place the ring, oldest to newest, on the right of a fixed window.
+///
+/// The `Arc` is cloned. The process list inside the snapshot is not copied.
+pub fn align_timeline(
+    samples: impl IntoIterator<Item = Arc<Snapshot>>,
+    capacity: usize,
+) -> Vec<Option<Arc<Snapshot>>> {
+    let samples: Vec<Arc<Snapshot>> = samples.into_iter().collect();
+    let mut out = Vec::with_capacity(capacity);
+    out.resize(capacity, None);
+    if capacity == 0 || samples.is_empty() {
+        return out;
+    }
+    let count = samples.len().min(capacity);
+    let start = capacity - count;
+    for (offset, sample) in samples[samples.len() - count..].iter().cloned().enumerate() {
+        out[start + offset] = Some(sample);
+    }
+    out
 }
 
 /// Place `values` at the right edge of a window of `capacity`.
