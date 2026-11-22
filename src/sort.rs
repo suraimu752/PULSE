@@ -206,6 +206,7 @@ mod tests {
             gpu_decode_percent: MetricValue::Unsupported,
             vram_dedicated_bytes: MetricValue::Unsupported,
             vram_shared_bytes: MetricValue::Unsupported,
+            gpus: Vec::new(),
         }
     }
 

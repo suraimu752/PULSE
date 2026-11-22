@@ -15,8 +15,12 @@ mod metric;
 #[cfg(feature = "mock")]
 mod mock;
 mod model;
+#[cfg(any(test, feature = "ui"))]
+mod pick;
 mod platform;
 mod present;
+#[cfg(any(test, feature = "ui"))]
+mod rank;
 mod sampler;
 mod series;
 mod sort;

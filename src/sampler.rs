@@ -9,6 +9,7 @@ use std::time::Instant;
 use crate::aggregate::aggregate;
 use crate::collector::{MetricEnricher, SystemProbe};
 use crate::config::{history_capacity, CPU_SAMPLE_INTERVAL, SHUTDOWN_POLL};
+use crate::history::align_timeline;
 use crate::history::RingBuffer;
 use crate::metric::MetricValue;
 use crate::model::Snapshot;
@@ -23,6 +24,9 @@ pub struct PublishedSample {
     pub cpu_history: Vec<Option<f64>>,
     pub memory_history: Vec<Option<f64>>,
     pub charts: ChartHistory,
+    /// Right-aligned 60-second window. `None` is a slot with no sample.
+    /// Each entry is the same `Arc` the ring holds, not a copy of the processes.
+    pub timeline: Vec<Option<Arc<Snapshot>>>,
     pub self_cpu: MetricValue<f64>,
     pub self_memory: MetricValue<u64>,
     pub updated_text: String,
@@ -78,6 +82,11 @@ impl SamplerCore {
         }
     }
 
+    fn aligned_at(&self, index: usize) -> Option<Arc<Snapshot>> {
+        let aligned = align_timeline(self.history.iter().cloned(), self.history.capacity());
+        aligned.get(index).and_then(|slot| slot.clone())
+    }
+
     pub fn tick(&mut self) -> PublishedSample {
         let mut raw = self.probe.probe();
         for enricher in &mut self.enrichers {
@@ -114,16 +123,38 @@ pub struct SamplerHandle {
     shared: SharedLatest,
     stop: Arc<AtomicBool>,
     join: Option<JoinHandle<()>>,
+    /// One snapshot kept for a screenshot of selection outside the ring.
+    retained: Option<Arc<Snapshot>>,
+}
+
+/// Pin this aligned slot, then publish `extra_steps` newer samples.
+/// The mock clock moves with those steps. Wall time is not waited on.
+#[derive(Clone, Copy, Debug)]
+pub struct RetainRequest {
+    pub index: usize,
+    pub extra_steps: u32,
 }
 
 impl SamplerHandle {
-    pub fn start(demo: Option<&str>) -> Result<Self, String> {
+    pub fn start(demo: Option<&str>, retain: Option<RetainRequest>) -> Result<Self, String> {
         let shared = SharedLatest::new();
         let stop = Arc::new(AtomicBool::new(false));
         let (mut core, warmup) = build_core(demo)?;
         for _ in 0..warmup {
             shared.publish(core.tick());
         }
+        let retained = if let Some(request) = retain {
+            let pinned = core.aligned_at(request.index).ok_or_else(|| {
+                "指定した履歴の位置に計測がありません。60 秒分のデモを温めてから指定してください。"
+                    .to_string()
+            })?;
+            for _ in 0..request.extra_steps {
+                shared.publish(core.tick());
+            }
+            Some(pinned)
+        } else {
+            None
+        };
         let shared_thread = shared.clone();
         let stop_thread = Arc::clone(&stop);
         let join = thread::Builder::new()
@@ -134,11 +165,16 @@ impl SamplerHandle {
             shared,
             stop,
             join: Some(join),
+            retained,
         })
     }
 
     pub fn latest(&self) -> SharedLatest {
         self.shared.clone()
+    }
+
+    pub fn take_retained(&mut self) -> Option<Arc<Snapshot>> {
+        self.retained.take()
     }
 }
 
@@ -207,10 +243,12 @@ fn publish(
         history.capacity(),
     );
     let (self_cpu, self_memory) = self_metrics(&snapshot);
+    let timeline = align_timeline(history.iter().cloned(), history.capacity());
     PublishedSample {
         cpu_history: charts.cpu.clone(),
         memory_history: charts.memory.clone(),
         charts,
+        timeline,
         self_cpu,
         self_memory,
         updated_text,
@@ -325,5 +363,32 @@ mod tests {
             core.history.iter().next().unwrap().processes[0].cpu_percent,
             MetricValue::Unavailable
         );
+    }
+
+    #[test]
+    fn extra_steps_evict_the_pinned_slot_without_waiting() {
+        let mut core = SamplerCore::new(
+            Box::new(ScriptedProbe {
+                ticks: 0,
+                start: Instant::now(),
+            }),
+            Vec::new(),
+        );
+        for _ in 0..history_capacity() {
+            core.tick();
+        }
+        let pinned = core.aligned_at(59).expect("slot");
+        let pinned_id = pinned.sequence;
+        for _ in 0..80 {
+            core.tick();
+        }
+        let still = align_timeline(core.history.iter().cloned(), core.history.capacity());
+        assert!(still
+            .iter()
+            .flatten()
+            .all(|snapshot| snapshot.sequence != pinned_id));
+        let newest = core.history.iter().last().expect("newest");
+        let age = newest.monotonic.saturating_duration_since(pinned.monotonic);
+        assert_eq!(age, Duration::from_secs(70));
     }
 }

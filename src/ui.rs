@@ -2,27 +2,47 @@
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use std::sync::Arc;
 
 use slint::{ComponentHandle, Model, ModelRc, Timer, TimerMode, VecModel};
 
-use crate::config::UI_REFRESH_INTERVAL;
+use crate::config::{history_capacity, HISTORY_WINDOW, UI_REFRESH_INTERVAL};
 use crate::format::DisplayKind;
 use crate::launch::LaunchOptions;
-use crate::model::ResourceId;
-use crate::present::{
-    present_cards, present_detail, present_rows, status_line, top_entries, PresentedRow,
+use crate::model::{ResourceId, Snapshot};
+use crate::pick::{
+    axis_of, displayed, format_age, index_to_fraction, select_slot, slot_of_id, AxisSample,
+    SelectionState,
 };
+use crate::present::{present_cards, present_detail_at, present_rows, status_line, PresentedRow};
+use crate::rank::{empty_rank_text, rank, rank_caption, RankStatus};
 use crate::sampler::{PublishedSample, SamplerHandle};
-use crate::series::{scale_peak, scale_percent, ChartHistory};
+use crate::series::{graph_points, scale_peak, scale_percent, ChartHistory};
 use crate::sort::SortColumn;
 
 slint::include_modules!();
+
+struct RankCache {
+    id: u64,
+    resource: ResourceId,
+    adapter: Option<u64>,
+    rows: Vec<TopRow>,
+    caption: String,
+    empty: String,
+}
 
 struct UiState {
     sort_column: SortColumn,
     sort_desc: bool,
     resource: ResourceId,
     last_sequence: Option<u64>,
+    selection: SelectionState,
+    timeline: Vec<Option<Arc<Snapshot>>>,
+    adapter: Option<u64>,
+    rank_cache: Option<RankCache>,
+    pending_slot: Option<i32>,
+    /// Screenshot aid: a snapshot already evicted from the ring.
+    pending_retained: Option<Arc<Snapshot>>,
     rows: Rc<VecModel<ProcessRow>>,
     top: Rc<VecModel<TopRow>>,
     detail_points: Rc<VecModel<f32>>,
@@ -38,10 +58,14 @@ struct UiState {
 }
 
 pub fn run(options: LaunchOptions) -> Result<(), String> {
-    let sampler = SamplerHandle::start(options.demo.as_deref())?;
+    let mut sampler = SamplerHandle::start(options.demo.as_deref(), options.retained_pin())?;
+    let retained = sampler.take_retained();
     let ui = AppWindow::new().map_err(|err| format!("ウィンドウを作成できませんでした: {err}"))?;
     ui.set_version_text(format!("PULSE {}", env!("CARGO_PKG_VERSION")).into());
     ui.set_page(options.page);
+    if let Some(resource) = options.resource {
+        ui.set_resource(resource);
+    }
     ui.set_demo(options.demo.is_some());
     if let Some(theme) = options.theme {
         ui.global::<Theme>().set_preference(theme);
@@ -56,8 +80,18 @@ pub fn run(options: LaunchOptions) -> Result<(), String> {
     let state = Rc::new(RefCell::new(UiState {
         sort_column: SortColumn::Cpu,
         sort_desc: true,
-        resource: ResourceId::Cpu,
+        resource: ResourceId::from_index(options.resource.unwrap_or(0)),
         last_sequence: None,
+        selection: SelectionState::live(),
+        timeline: Vec::new(),
+        adapter: None,
+        rank_cache: None,
+        pending_slot: if retained.is_some() {
+            None
+        } else {
+            options.select_history
+        },
+        pending_retained: retained,
         rows: Rc::new(VecModel::from(Vec::<ProcessRow>::new())),
         top: Rc::new(VecModel::from(Vec::<TopRow>::new())),
         detail_points: Rc::new(VecModel::from(Vec::<f32>::new())),
@@ -90,6 +124,7 @@ pub fn run(options: LaunchOptions) -> Result<(), String> {
     let latest = sampler.latest();
     wire_sort(&ui, &state, latest.clone());
     wire_resource(&ui, &state, latest.clone());
+    wire_history(&ui, &state, latest.clone());
     let prefs = Rc::new(RefCell::new(session_prefs(&options)?));
     apply_prefs(&ui, &prefs.borrow());
     if !prefs.borrow().resource_shown[state.borrow().resource as usize] {
@@ -307,6 +342,75 @@ fn wire_layout(
     }
 }
 
+fn wire_history(
+    ui: &AppWindow,
+    state: &Rc<RefCell<UiState>>,
+    latest: crate::sampler::SharedLatest,
+) {
+    let ui_weak = ui.as_weak();
+    let picked_state = Rc::clone(state);
+    let picked_latest = latest.clone();
+    ui.on_history_picked(move |index| {
+        let Some(ui) = ui_weak.upgrade() else {
+            return;
+        };
+        pin_slot(&mut picked_state.borrow_mut(), index);
+        if let Some(sample) = picked_latest.load() {
+            apply(&ui, &picked_state, &sample, true);
+        }
+    });
+
+    let ui_weak = ui.as_weak();
+    let hover_state = Rc::clone(state);
+    ui.on_history_hovered(move |index| {
+        let Some(ui) = ui_weak.upgrade() else {
+            return;
+        };
+        let preview = hover_text(&hover_state.borrow(), index);
+        ui.set_history_hover(preview.into());
+    });
+
+    let ui_weak = ui.as_weak();
+    let live_state = Rc::clone(state);
+    let live_latest = latest.clone();
+    ui.on_history_live(move || {
+        let Some(ui) = ui_weak.upgrade() else {
+            return;
+        };
+        let mut state = live_state.borrow_mut();
+        state.selection.clear();
+        state.rank_cache = None;
+        drop(state);
+        if let Some(sample) = live_latest.load() {
+            apply(&ui, &live_state, &sample, true);
+        }
+    });
+
+    let ui_weak = ui.as_weak();
+    let gpu_state = Rc::clone(state);
+    let gpu_latest = latest;
+    ui.on_gpu_picked(move |index| {
+        let Some(ui) = ui_weak.upgrade() else {
+            return;
+        };
+        {
+            let mut state = gpu_state.borrow_mut();
+            let luid = state.timeline.iter().rev().flatten().find_map(|snapshot| {
+                let mut gpus = snapshot.gpus.clone();
+                gpus.sort_by_key(|gpu| gpu.luid);
+                gpus.get(index as usize).map(|gpu| gpu.luid)
+            });
+            if let Some(luid) = luid {
+                state.adapter = Some(luid);
+                state.rank_cache = None;
+            }
+        }
+        if let Some(sample) = gpu_latest.load() {
+            apply(&ui, &gpu_state, &sample, true);
+        }
+    });
+}
+
 fn wire_resource(
     ui: &AppWindow,
     state: &Rc<RefCell<UiState>>,
@@ -332,6 +436,18 @@ fn apply(ui: &AppWindow, state: &Rc<RefCell<UiState>>, sample: &PublishedSample,
             return;
         }
         state.last_sequence = Some(sample.snapshot.sequence);
+        state.timeline = sample.timeline.clone();
+        if let Some(snapshot) = state.pending_retained.take() {
+            state.selection.pin(snapshot);
+            state.pending_slot = None;
+            state.rank_cache = None;
+        }
+        if let Some(index) = state.pending_slot.take() {
+            pin_slot(&mut state, index);
+        }
+        if gpu_resource(state.resource) && state.adapter.is_none() {
+            state.adapter = sample.snapshot.gpus.iter().map(|gpu| gpu.luid).min();
+        }
         (
             state.sort_column,
             state.sort_desc,
@@ -343,15 +459,7 @@ fn apply(ui: &AppWindow, state: &Rc<RefCell<UiState>>, sample: &PublishedSample,
     let presented = present_rows(&sample.snapshot, column, descending);
     sync_model(&rows_model, presented.into_iter().map(to_row).collect());
     paint_graphs(ui, state, resource, &sample.charts);
-    let leaders = top_entries(&sample.snapshot, resource, 5)
-        .into_iter()
-        .map(|entry| TopRow {
-            name: entry.name.into(),
-            value: entry.value.into(),
-            kind: entry.kind.code(),
-        })
-        .collect();
-    sync_model(&state.borrow().top, leaders);
+    paint_history(ui, state, resource, sample);
 
     let line = status_line(
         &sample.snapshot,
@@ -396,14 +504,273 @@ fn apply(ui: &AppWindow, state: &Rc<RefCell<UiState>>, sample: &PublishedSample,
     ui.set_vram_kind(cards.vram_dedicated.kind.code());
     ui.set_shared_summary(cards.vram_shared.text.into());
     ui.set_shared_kind(cards.vram_shared.kind.code());
+}
 
-    let detail = present_detail(&sample.snapshot, resource);
+fn paint_history(
+    ui: &AppWindow,
+    state: &Rc<RefCell<UiState>>,
+    resource: ResourceId,
+    sample: &PublishedSample,
+) {
+    let (adapter, shown, cursor, pinned, lines, rows, caption, empty) = {
+        let mut state = state.borrow_mut();
+        let adapter = if gpu_resource(resource) {
+            state.adapter
+        } else {
+            None
+        };
+        let shown = state
+            .selection
+            .selected()
+            .cloned()
+            .unwrap_or_else(|| Arc::clone(&sample.snapshot));
+        let axis = axis_samples(&state.timeline);
+        let cursor = state
+            .selection
+            .selected()
+            .and_then(|selected| slot_of_id(&axis, selected.sequence));
+        let pinned = !state.selection.is_live();
+        let lines = match state.selection.selected() {
+            Some(selected) => history_lines(selected, &sample.snapshot, cursor.is_some()),
+            None => HistoryLines::none(),
+        };
+        let key = state
+            .selection
+            .selected()
+            .map(|selected| selected.sequence)
+            .unwrap_or(sample.snapshot.sequence);
+        let cache_hit = state.rank_cache.as_ref().is_some_and(|cache| {
+            cache.id == key && cache.resource == resource && cache.adapter == adapter
+        });
+        if !cache_hit {
+            let view = displayed(
+                sample.snapshot.as_ref(),
+                state.selection.selected().map(|snapshot| snapshot.as_ref()),
+            );
+            let status = rank(view, resource, adapter, 5);
+            let rows = match &status {
+                RankStatus::Ranked(ranked) => ranked
+                    .iter()
+                    .map(|row| TopRow {
+                        rank: row.rank.to_string().into(),
+                        name: row.name.as_str().into(),
+                        pid: row.pid.to_string().into(),
+                        value: row.value.as_str().into(),
+                        kind: row.kind.code(),
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            };
+            state.rank_cache = Some(RankCache {
+                id: key,
+                resource,
+                adapter,
+                rows,
+                caption: rank_caption(resource, adapter.is_some()).to_string(),
+                empty: empty_rank_text(&status).unwrap_or("").to_string(),
+            });
+        }
+        let cache = state.rank_cache.as_ref().expect("rank cache");
+        (
+            adapter,
+            shown,
+            cursor,
+            pinned,
+            lines,
+            cache.rows.clone(),
+            cache.caption.clone(),
+            cache.empty.clone(),
+        )
+    };
+
+    let detail = present_detail_at(shown.as_ref(), resource, adapter);
     ui.set_detail_title(detail.title.into());
     ui.set_detail_value(detail.value.into());
     ui.set_detail_kind(detail.kind.code());
     ui.set_detail_extra(detail.extra.into());
     ui.set_detail_note(detail.note.into());
     ui.set_detail_graph(detail.show_graph);
+    ui.set_history_cursor(cursor.map(|index| index as i32).unwrap_or(-1));
+    ui.set_history_pinned(pinned);
+    ui.set_history_when(lines.when.into());
+    ui.set_history_age(lines.age.into());
+    ui.set_history_interval(lines.interval.into());
+    ui.set_history_outside(lines.outside.into());
+    ui.set_rank_caption(caption.into());
+    ui.set_rank_empty(
+        if empty.is_empty() {
+            "実測値のあるプロセスはありません。"
+        } else {
+            empty.as_str()
+        }
+        .into(),
+    );
+    sync_model(&state.borrow().top, rows);
+
+    let points = {
+        let state = state.borrow();
+        graph_points(
+            state.timeline.iter().map(|slot| slot.as_deref()),
+            history_capacity(),
+            resource,
+            adapter,
+        )
+    };
+    let scaled = scale_for(resource, &points);
+    ui.set_graph_axis_high(scaled.axis_high.into());
+    ui.set_graph_axis_low(scaled.axis_low.into());
+    sync_model(&state.borrow().detail_points, scaled.points);
+    publish_gpu_choices(ui, sample, adapter);
+}
+
+fn publish_gpu_choices(ui: &AppWindow, sample: &PublishedSample, adapter: Option<u64>) {
+    let mut gpus = sample.snapshot.gpus.clone();
+    gpus.sort_by_key(|gpu| gpu.luid);
+    let names: Vec<slint::SharedString> = if adapter.is_some() {
+        gpus.iter().map(|gpu| gpu.name.as_str().into()).collect()
+    } else {
+        Vec::new()
+    };
+    let choice = adapter
+        .and_then(|luid| gpus.iter().position(|gpu| gpu.luid == luid))
+        .map(|index| index as i32)
+        .unwrap_or(-1);
+    ui.set_gpu_names(ModelRc::new(VecModel::from(names)));
+    ui.set_gpu_choice(choice);
+}
+
+fn pin_slot(state: &mut UiState, index: i32) {
+    if index < 0 {
+        return;
+    }
+    let axis = axis_samples(&state.timeline);
+    let Some(len) = usize::try_from(index).ok() else {
+        return;
+    };
+    let fraction = index_to_fraction(axis.len(), len);
+    let window_ns = u64::try_from(HISTORY_WINDOW.as_nanos()).unwrap_or(60_000_000_000);
+    let Some(slot) = select_slot(&axis, fraction, window_ns) else {
+        return;
+    };
+    let Some(snapshot) = state.timeline.get(slot).and_then(|slot| slot.clone()) else {
+        return;
+    };
+    state.selection.pin(snapshot);
+    state.rank_cache = None;
+}
+
+fn hover_text(state: &UiState, index: i32) -> String {
+    if index < 0 {
+        return String::new();
+    }
+    let Some(slot) = usize::try_from(index)
+        .ok()
+        .and_then(|index| state.timeline.get(index))
+        .and_then(|slot| slot.as_ref())
+    else {
+        return String::new();
+    };
+    let adapter = if gpu_resource(state.resource) {
+        state.adapter
+    } else {
+        None
+    };
+    let detail = present_detail_at(slot, state.resource, adapter);
+    let clock = crate::platform::format_local_hms(slot.taken_at);
+    format!("{clock}  {}", detail.value)
+}
+
+struct HistoryLines {
+    when: String,
+    age: String,
+    interval: String,
+    outside: String,
+}
+
+impl HistoryLines {
+    fn none() -> Self {
+        Self {
+            when: String::new(),
+            age: String::new(),
+            interval: String::new(),
+            outside: String::new(),
+        }
+    }
+}
+
+/// Separate lines so a narrow pane cannot break inside 「（30秒前）」.
+fn history_lines(selected: &Snapshot, latest: &Snapshot, in_window: bool) -> HistoryLines {
+    let age = format_age(
+        latest
+            .monotonic
+            .saturating_duration_since(selected.monotonic),
+    );
+    let clock = crate::platform::format_local_hms(selected.taken_at);
+    let interval = match selected.interval {
+        Some(interval) => format!("区間 {} ms", interval.as_millis()),
+        None => "区間は未確定".to_string(),
+    };
+    if in_window {
+        HistoryLines {
+            when: format!("選択中 {clock}"),
+            age,
+            interval,
+            outside: String::new(),
+        }
+    } else {
+        HistoryLines {
+            when: format!("選択中：{age}"),
+            age: clock,
+            interval,
+            outside: "この時点は直近 60 秒のグラフの外です".to_string(),
+        }
+    }
+}
+
+fn axis_samples(timeline: &[Option<Arc<Snapshot>>]) -> Vec<Option<AxisSample>> {
+    let Some(newest) = timeline
+        .iter()
+        .flatten()
+        .map(|snapshot| snapshot.monotonic)
+        .max()
+    else {
+        return vec![None; timeline.len()];
+    };
+    let origin = newest.checked_sub(HISTORY_WINDOW).unwrap_or(newest);
+    axis_of(timeline, |snapshot| {
+        u64::try_from(
+            snapshot
+                .monotonic
+                .saturating_duration_since(origin)
+                .as_nanos(),
+        )
+        .unwrap_or(u64::MAX)
+    })
+}
+
+fn gpu_resource(resource: ResourceId) -> bool {
+    matches!(
+        resource,
+        ResourceId::Gpu3d
+            | ResourceId::GpuEncode
+            | ResourceId::GpuDecode
+            | ResourceId::VramDedicated
+            | ResourceId::VramShared
+    )
+}
+
+fn scale_for(resource: ResourceId, points: &[Option<f64>]) -> crate::series::ScaledSeries {
+    match resource {
+        ResourceId::Cpu
+        | ResourceId::Memory
+        | ResourceId::Gpu3d
+        | ResourceId::GpuEncode
+        | ResourceId::GpuDecode => scale_percent(points),
+        ResourceId::Disk | ResourceId::Network => scale_peak(points, crate::series::rate_label),
+        ResourceId::VramDedicated | ResourceId::VramShared => {
+            scale_peak(points, crate::series::bytes_label)
+        }
+    }
 }
 
 fn paint_graphs(
@@ -522,6 +889,37 @@ fn sync_model<T: Clone + 'static>(model: &VecModel<T>, mut next: Vec<T>) {
     }
     while model.row_count() > target {
         let _ = model.remove(model.row_count() - 1);
+    }
+}
+
+#[cfg(test)]
+mod history_line_tests {
+    use super::history_lines;
+    use crate::model::Snapshot;
+    use std::time::{Duration, Instant, SystemTime};
+
+    #[test]
+    fn selection_text_keeps_the_age_on_its_own_line() {
+        let origin = Instant::now();
+        let mut selected = Snapshot::bare(1, origin);
+        selected.interval = Some(Duration::from_millis(500));
+        selected.taken_at = SystemTime::UNIX_EPOCH + Duration::from_secs(30);
+        let inside = history_lines(
+            &selected,
+            &Snapshot::bare(2, origin + Duration::from_secs(30)),
+            true,
+        );
+        assert_eq!(inside.age, "30秒前");
+        assert!(!inside.when.contains('（'));
+        assert!(inside.outside.is_empty());
+        let outside = history_lines(
+            &selected,
+            &Snapshot::bare(3, origin + Duration::from_secs(70)),
+            false,
+        );
+        assert_eq!(outside.when, "選択中：1分10秒前");
+        assert_eq!(outside.interval, "区間 500 ms");
+        assert!(outside.outside.contains("グラフの外"));
     }
 }
 
@@ -872,6 +1270,61 @@ mod layout_tests {
             .next()
             .expect("cpu down");
         assert!(inside(&up, &menu));
+        let _ = ui.hide();
+    }
+
+    #[cfg(feature = "mock")]
+    #[test]
+    fn clicking_a_history_bar_selects_that_snapshot() {
+        use crate::mock::{MockProbe, Scenario};
+        use crate::pick::{index_to_fraction, select_slot};
+        use crate::rank::{rank, RankStatus};
+        use crate::sampler::SamplerCore;
+
+        backend();
+        let mut core = SamplerCore::new(Box::new(MockProbe::new(Scenario::History)), Vec::new());
+        let mut sample = core.tick();
+        for _ in 1..120 {
+            sample = core.tick();
+        }
+        let axis = super::axis_samples(&sample.timeline);
+        let window_ns = u64::try_from(crate::config::HISTORY_WINDOW.as_nanos()).unwrap();
+        let slot =
+            select_slot(&axis, index_to_fraction(axis.len(), 59), window_ns).expect("30s slot");
+        let snapshot = sample.timeline[slot].as_ref().expect("recorded");
+        let RankStatus::Ranked(rows) = rank(snapshot, ResourceId::Cpu, None, 5) else {
+            panic!("ranking");
+        };
+        assert_eq!(rows[0].name, "spike.exe", "the 30s-ago spike should lead");
+        assert!(
+            rows.iter().any(|row| row.name == "gone.exe"),
+            "the process that is still alive 30s ago stays in that ranking"
+        );
+
+        let ui = open_performance(1280.0, 720.0, false);
+        let points = crate::series::scale_percent(&crate::series::graph_points(
+            sample.timeline.iter().map(|slot| slot.as_deref()),
+            sample.timeline.len(),
+            ResourceId::Cpu,
+            None,
+        ))
+        .points;
+        ui.set_detail_points(ModelRc::new(VecModel::from(points)));
+        ui.set_detail_graph(true);
+        ui.show().expect("show");
+        let clicked = Rc::new(std::cell::Cell::new(-1));
+        let clicked_slot = Rc::clone(&clicked);
+        ui.on_history_picked(move |index| clicked_slot.set(index));
+        let mut bars: Vec<_> = ElementHandle::find_by_accessible_label(&ui, "履歴").collect();
+        bars.sort_by(|left, right| {
+            left.absolute_position()
+                .x
+                .partial_cmp(&right.absolute_position().x)
+                .unwrap()
+        });
+        assert_eq!(bars.len(), 120, "one bar per history slot");
+        bars[59].mock_single_click(slint::platform::PointerEventButton::Left);
+        assert_eq!(clicked.get(), 59);
         let _ = ui.hide();
     }
 }

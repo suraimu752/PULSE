@@ -38,6 +38,9 @@ pub struct RawProcess {
     pub gpu_decode_percent: MetricValue<f64>,
     pub vram_dedicated_bytes: MetricValue<u64>,
     pub vram_shared_bytes: MetricValue<u64>,
+    /// Per-adapter engine and memory readings. Empty when the collector has
+    /// not split adapters. The scalar GPU fields remain the cross-adapter max.
+    pub gpus: Vec<ProcessGpu>,
 }
 
 impl RawProcess {
@@ -60,6 +63,7 @@ impl RawProcess {
             gpu_decode_percent: MetricValue::Unsupported,
             vram_dedicated_bytes: MetricValue::Unsupported,
             vram_shared_bytes: MetricValue::Unsupported,
+            gpus: Vec::new(),
         }
     }
 
@@ -154,6 +158,22 @@ pub struct ProcessSnapshot {
     pub gpu_decode_percent: MetricValue<f64>,
     pub vram_dedicated_bytes: MetricValue<u64>,
     pub vram_shared_bytes: MetricValue<u64>,
+    /// Per-adapter readings. The fields above stay the max across adapters
+    /// (VRAM stays the existing per-process total) so the process table does
+    /// not mix engines by summing them. Ranking for one adapter uses this list
+    /// and never substitutes another adapter's number.
+    pub gpus: Vec<ProcessGpu>,
+}
+
+/// One process on one GPU adapter. Engines are already folded with a max.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ProcessGpu {
+    pub luid: u64,
+    pub gpu_3d_percent: MetricValue<f64>,
+    pub gpu_encode_percent: MetricValue<f64>,
+    pub gpu_decode_percent: MetricValue<f64>,
+    pub vram_dedicated_bytes: MetricValue<u64>,
+    pub vram_shared_bytes: MetricValue<u64>,
 }
 
 /// Aggregated view of the machine at one publish.
@@ -162,6 +182,10 @@ pub struct ProcessSnapshot {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Snapshot {
     pub sequence: u64,
+    /// Monotonic sample time. Selection uses this, not the wall clock, so a
+    /// system-clock change cannot move the chosen point onto another sample.
+    pub monotonic: Instant,
+    /// Wall clock captured at the same sample, for the label only.
     pub taken_at: SystemTime,
     pub interval: Option<std::time::Duration>,
     pub logical_processors: MetricValue<u32>,
@@ -256,6 +280,79 @@ impl ResourceId {
             6 => Self::GpuDecode,
             7 => Self::VramDedicated,
             _ => Self::VramShared,
+        }
+    }
+
+    pub fn parse(name: &str) -> Option<Self> {
+        Some(match name {
+            "cpu" => Self::Cpu,
+            "memory" => Self::Memory,
+            "disk" => Self::Disk,
+            "network" => Self::Network,
+            "gpu3d" => Self::Gpu3d,
+            "gpu-encode" => Self::GpuEncode,
+            "gpu-decode" => Self::GpuDecode,
+            "vram" => Self::VramDedicated,
+            "shared" => Self::VramShared,
+            _ => return None,
+        })
+    }
+}
+
+#[cfg(test)]
+impl ProcessSnapshot {
+    pub fn bare(pid: u32, creation: u64, name: &str) -> Self {
+        Self {
+            key: ProcessKey {
+                pid,
+                creation_time_100ns: creation,
+            },
+            parent_pid: 0,
+            name: name.to_string(),
+            cpu_percent: MetricValue::Unsupported,
+            memory_bytes: MetricValue::Unsupported,
+            disk_read_bps: MetricValue::Unsupported,
+            disk_write_bps: MetricValue::Unsupported,
+            net_send_bps: MetricValue::Unsupported,
+            net_recv_bps: MetricValue::Unsupported,
+            gpu_3d_percent: MetricValue::Unsupported,
+            gpu_encode_percent: MetricValue::Unsupported,
+            gpu_decode_percent: MetricValue::Unsupported,
+            vram_dedicated_bytes: MetricValue::Unsupported,
+            vram_shared_bytes: MetricValue::Unsupported,
+            gpus: Vec::new(),
+        }
+    }
+}
+
+#[cfg(test)]
+impl Snapshot {
+    pub fn bare(sequence: u64, monotonic: Instant) -> Self {
+        Self {
+            sequence,
+            monotonic,
+            taken_at: SystemTime::UNIX_EPOCH,
+            interval: Some(std::time::Duration::from_millis(500)),
+            logical_processors: MetricValue::Value(8),
+            cpu_percent: MetricValue::Unavailable,
+            memory_used_bytes: MetricValue::Unavailable,
+            memory_total_bytes: MetricValue::Unavailable,
+            disk_read_bps: MetricValue::Unsupported,
+            disk_write_bps: MetricValue::Unsupported,
+            net_send_bps: MetricValue::Unsupported,
+            net_recv_bps: MetricValue::Unsupported,
+            gpu_3d_percent: MetricValue::Unsupported,
+            gpu_encode_percent: MetricValue::Unsupported,
+            gpu_decode_percent: MetricValue::Unsupported,
+            vram_dedicated_bytes: MetricValue::Unsupported,
+            vram_shared_bytes: MetricValue::Unsupported,
+            disks: Vec::new(),
+            adapters: Vec::new(),
+            gpus: Vec::new(),
+            process_net: ProcessNetMode::Attributed,
+            gpu_presence: GpuPresence::Unknown,
+            processes: Vec::new(),
+            warning: None,
         }
     }
 }

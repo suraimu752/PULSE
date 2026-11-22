@@ -12,7 +12,7 @@ use crate::gpuagg::{
     EngineClass,
 };
 use crate::metric::MetricValue;
-use crate::model::{GpuAdapter, GpuPresence, RawSample};
+use crate::model::{GpuAdapter, GpuPresence, ProcessGpu, RawProcess, RawSample};
 
 use super::pdh::{PdhQuery, PdhSample};
 
@@ -96,6 +96,7 @@ impl MetricEnricher for GpuEnricher {
 fn apply_engines(sample: &mut RawSample, values: &[(String, f64)]) -> bool {
     let mut by_process: HashMap<u32, ClassBuckets> = HashMap::new();
     let mut by_adapter: HashMap<u64, ClassBuckets> = HashMap::new();
+    let mut by_process_adapter: HashMap<(u32, u64), ClassBuckets> = HashMap::new();
     for (name, value) in values {
         let Some(instance) = parse_engine_instance(name) else {
             continue;
@@ -111,6 +112,10 @@ fn apply_engines(sample: &mut RawSample, values: &[(String, f64)]) -> bool {
             .entry(instance.luid)
             .or_default()
             .push(instance.class, *value);
+        by_process_adapter
+            .entry((instance.pid, instance.luid))
+            .or_default()
+            .push(instance.class, *value);
     }
     if by_adapter.is_empty() {
         // Instances existed but none matched the documented name. Do not invent 0%.
@@ -122,6 +127,7 @@ fn apply_engines(sample: &mut RawSample, values: &[(String, f64)]) -> bool {
         process.gpu_3d_percent = bucket_or_zero(buckets, EngineClass::ThreeD);
         process.gpu_encode_percent = bucket_or_zero(buckets, EngineClass::Encode);
         process.gpu_decode_percent = bucket_or_zero(buckets, EngineClass::Decode);
+        process.gpus = process_gpus(&by_process_adapter, process.pid);
     }
     sample.system_gpu_3d_percent = class_or_zero(&by_adapter, EngineClass::ThreeD);
     sample.system_gpu_encode_percent = class_or_zero(&by_adapter, EngineClass::Encode);
@@ -165,6 +171,7 @@ fn apply_memory(sample: &mut RawSample, enricher: &GpuEnricher) {
                 } else {
                     MetricValue::Unavailable
                 };
+                attach_process_vram(process, dedicated.as_deref(), shared.as_deref());
             }
         }
     }
@@ -260,6 +267,78 @@ fn as_bytes(value: f64) -> Option<u64> {
     }
 }
 
+fn process_gpus(buckets: &HashMap<(u32, u64), ClassBuckets>, pid: u32) -> Vec<ProcessGpu> {
+    let mut rows: Vec<ProcessGpu> = buckets
+        .iter()
+        .filter(|((process_pid, _), _)| *process_pid == pid)
+        .map(|((_, luid), buckets)| ProcessGpu {
+            luid: *luid,
+            gpu_3d_percent: bucket_or_zero(Some(buckets), EngineClass::ThreeD),
+            gpu_encode_percent: bucket_or_zero(Some(buckets), EngineClass::Encode),
+            gpu_decode_percent: bucket_or_zero(Some(buckets), EngineClass::Decode),
+            vram_dedicated_bytes: MetricValue::Unavailable,
+            vram_shared_bytes: MetricValue::Unavailable,
+        })
+        .collect();
+    rows.sort_by_key(|row| row.luid);
+    rows
+}
+
+fn attach_process_vram(
+    process: &mut RawProcess,
+    dedicated: Option<&[(String, f64)]>,
+    shared: Option<&[(String, f64)]>,
+) {
+    let dedicated = memory_by_pid_luid(dedicated, process.pid);
+    let shared = memory_by_pid_luid(shared, process.pid);
+    let mut luids: Vec<u64> = dedicated.keys().chain(shared.keys()).copied().collect();
+    luids.sort_unstable();
+    luids.dedup();
+    for luid in luids {
+        let row = if let Some(row) = process.gpus.iter_mut().find(|row| row.luid == luid) {
+            row
+        } else {
+            process.gpus.push(ProcessGpu {
+                luid,
+                gpu_3d_percent: MetricValue::Unavailable,
+                gpu_encode_percent: MetricValue::Unavailable,
+                gpu_decode_percent: MetricValue::Unavailable,
+                vram_dedicated_bytes: MetricValue::Unavailable,
+                vram_shared_bytes: MetricValue::Unavailable,
+            });
+            process.gpus.last_mut().unwrap()
+        };
+        if let Some(bytes) = dedicated.get(&luid) {
+            row.vram_dedicated_bytes = MetricValue::Value(*bytes);
+        }
+        if let Some(bytes) = shared.get(&luid) {
+            row.vram_shared_bytes = MetricValue::Value(*bytes);
+        }
+    }
+    process.gpus.sort_by_key(|row| row.luid);
+}
+
+fn memory_by_pid_luid(values: Option<&[(String, f64)]>, pid: u32) -> HashMap<u64, u64> {
+    let mut best = HashMap::new();
+    let Some(values) = values else {
+        return best;
+    };
+    for (name, value) in values {
+        let Some((row_pid, luid)) = parse_process_memory_instance(name) else {
+            continue;
+        };
+        if row_pid != pid {
+            continue;
+        }
+        let Some(bytes) = as_bytes(*value) else {
+            continue;
+        };
+        let entry = best.entry(luid).or_insert(0);
+        *entry = (*entry).max(bytes);
+    }
+    best
+}
+
 fn bucket_or_zero(buckets: Option<&ClassBuckets>, class: EngineClass) -> MetricValue<f64> {
     match buckets {
         Some(buckets) if !buckets.of(class).is_empty() => {
@@ -318,6 +397,7 @@ fn fill_gpu(sample: &mut RawSample, percent: MetricValue<f64>, bytes: MetricValu
         process.gpu_decode_percent = percent;
         process.vram_dedicated_bytes = bytes;
         process.vram_shared_bytes = bytes;
+        process.gpus.clear();
     }
 }
 

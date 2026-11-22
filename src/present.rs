@@ -5,7 +5,9 @@ use crate::format::{
     DisplayKind,
 };
 use crate::metric::MetricValue;
-use crate::model::{GpuPresence, ProcessNetMode, ProcessSnapshot, ResourceId, Snapshot};
+use crate::model::{
+    GpuAdapter, GpuPresence, ProcessNetMode, ProcessSnapshot, ResourceId, Snapshot,
+};
 use crate::sort::{sort_processes, SortColumn};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -118,6 +120,88 @@ pub fn present_cards(snapshot: &Snapshot) -> ResourceCards {
 }
 
 pub fn present_detail(snapshot: &Snapshot, resource: ResourceId) -> DetailText {
+    present_detail_at(snapshot, resource, None)
+}
+
+/// Detail text for one snapshot. When `adapter` is set, a GPU resource shows
+/// that adapter only. A missing adapter is N/A, not another GPU's number.
+pub fn present_detail_at(
+    snapshot: &Snapshot,
+    resource: ResourceId,
+    adapter: Option<u64>,
+) -> DetailText {
+    let mut detail = present_detail_system(snapshot, resource);
+    if let Some(luid) = adapter {
+        if let Some(text) = adapter_override(&detail, snapshot, resource, luid) {
+            detail = text;
+        }
+    }
+    detail
+}
+
+fn adapter_override(
+    base: &DetailText,
+    snapshot: &Snapshot,
+    resource: ResourceId,
+    luid: u64,
+) -> Option<DetailText> {
+    let gpu = snapshot.gpus.iter().find(|gpu| gpu.luid == luid);
+    let (value, kind, show_graph) = match resource {
+        ResourceId::Gpu3d => gpu_text(gpu, |gpu| gpu.util_3d, true),
+        ResourceId::GpuEncode => gpu_text(gpu, |gpu| gpu.util_encode, true),
+        ResourceId::GpuDecode => gpu_text(gpu, |gpu| gpu.util_decode, true),
+        ResourceId::VramDedicated => gpu_text(gpu, |gpu| bytes_as_f64(gpu.dedicated_bytes), false),
+        ResourceId::VramShared => gpu_text(gpu, |gpu| bytes_as_f64(gpu.shared_bytes), false),
+        _ => return None,
+    };
+    let mut detail = base.clone();
+    detail.value = value;
+    detail.kind = kind;
+    detail.show_graph = show_graph;
+    Some(detail)
+}
+
+fn gpu_text(
+    gpu: Option<&GpuAdapter>,
+    metric: impl Fn(&GpuAdapter) -> MetricValue<f64>,
+    percent: bool,
+) -> (String, DisplayKind, bool) {
+    let Some(gpu) = gpu else {
+        return ("N/A".to_string(), DisplayKind::Unavailable, true);
+    };
+    let value = metric(gpu);
+    if percent {
+        (
+            format_percent(value),
+            percent_kind(value),
+            !matches!(value, MetricValue::Unsupported),
+        )
+    } else {
+        let bytes = match value {
+            MetricValue::Value(number) if number.is_finite() && number >= 0.0 => {
+                MetricValue::Value(number.round() as u64)
+            }
+            MetricValue::Value(_) => MetricValue::Unavailable,
+            MetricValue::Unavailable => MetricValue::Unavailable,
+            MetricValue::Unsupported => MetricValue::Unsupported,
+        };
+        (
+            format_bytes(bytes),
+            bytes_kind(bytes),
+            !matches!(bytes, MetricValue::Unsupported),
+        )
+    }
+}
+
+fn bytes_as_f64(value: MetricValue<u64>) -> MetricValue<f64> {
+    match value {
+        MetricValue::Value(bytes) => MetricValue::Value(bytes as f64),
+        MetricValue::Unavailable => MetricValue::Unavailable,
+        MetricValue::Unsupported => MetricValue::Unsupported,
+    }
+}
+
+fn present_detail_system(snapshot: &Snapshot, resource: ResourceId) -> DetailText {
     match resource {
         ResourceId::Cpu => DetailText {
             title: "CPU".to_string(),
@@ -491,7 +575,7 @@ fn logical_processor_text(value: MetricValue<u32>) -> String {
 
 fn interval_text(snapshot: &Snapshot) -> String {
     match snapshot.interval {
-        Some(interval) => format!("直近の計測区間 {} ms", interval.as_millis()),
+        Some(interval) => format!("計測区間 {} ms", interval.as_millis()),
         None => "計測区間はまだ確定していません".to_string(),
     }
 }
@@ -518,6 +602,7 @@ mod tests {
     fn snapshot() -> Snapshot {
         Snapshot {
             sequence: 1,
+            monotonic: std::time::Instant::now(),
             taken_at: SystemTime::UNIX_EPOCH,
             interval: Some(std::time::Duration::from_millis(500)),
             logical_processors: MetricValue::Value(8),
@@ -556,6 +641,7 @@ mod tests {
                 gpu_decode_percent: MetricValue::Unsupported,
                 vram_dedicated_bytes: MetricValue::Unsupported,
                 vram_shared_bytes: MetricValue::Unsupported,
+                gpus: Vec::new(),
             }],
             warning: None,
         }
