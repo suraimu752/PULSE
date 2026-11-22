@@ -4,10 +4,9 @@
 //! utilizations invents a number the hardware did not report. The value kept
 //! for one engine class is the maximum finite reading.
 
-#[cfg(any(test, feature = "mock"))]
 use crate::metric::MetricValue;
 
-#[cfg(any(test, feature = "mock"))]
+#[cfg_attr(not(any(windows, test, feature = "mock")), allow(dead_code))]
 pub fn fold_engine_percents(values: impl IntoIterator<Item = f64>) -> MetricValue<f64> {
     let mut max: Option<f64> = None;
     for value in values {
@@ -49,6 +48,13 @@ pub fn parse_engine_instance(name: &str) -> Option<EngineInstance> {
     let pid = pid_text.parse().ok()?;
     let (luid, class) = parse_luid_and_class(rest)?;
     Some(EngineInstance { pid, luid, class })
+}
+
+/// `luid_0x00000000_0x0000CACE_phys_0` anywhere in a counter instance name.
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn parse_luid_token(name: &str) -> Option<u64> {
+    let rest = name.split("luid_").nth(1)?;
+    split_luid(rest).map(|(luid, _)| luid)
 }
 
 /// `pid_1234_luid_0x00000000_0x0000CACE_phys_0`
@@ -117,6 +123,10 @@ mod tests {
         assert_eq!(
             parse_process_memory_instance("pid_4_luid_0x00000001_0x00000002_phys_0"),
             Some((4, (1u64 << 32) | 2))
+        );
+        assert_eq!(
+            parse_luid_token("luid_0x00000000_0x0000CACE_phys_0"),
+            Some(0xCACE)
         );
     }
 }

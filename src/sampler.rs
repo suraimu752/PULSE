@@ -81,8 +81,17 @@ impl SamplerCore {
     pub fn tick(&mut self) -> PublishedSample {
         let mut raw = self.probe.probe();
         for enricher in &mut self.enrichers {
-            enricher.enrich(&mut raw);
-            let _ = enricher.id();
+            let id = enricher.id();
+            let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                enricher.enrich(&mut raw);
+            }));
+            if caught.is_err() {
+                let note = format!("{id} failed");
+                raw.warning = Some(match raw.warning.take() {
+                    Some(existing) => format!("{existing}; {note}"),
+                    None => note,
+                });
+            }
         }
         let mut snapshot = aggregate(self.previous.as_ref(), &raw);
         self.sequence = self.sequence.saturating_add(1);

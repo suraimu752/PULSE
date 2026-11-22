@@ -8,7 +8,7 @@ Phase 1 のプロセスは二つです。
 高頻度の ETW イベントを UI へ直接流す経路は作っていません。将来 ETW を入れる場合も、集計済みの区間値だけをスナップショットに載せます。
 
 ```
-Windows API / 将来の PDH・ETW
+Windows API / PDH / GetIfTable2
         │
         ▼
  SystemProbe + MetricEnricher     （src/platform, src/collector.rs）
@@ -36,7 +36,11 @@ Windows API / 将来の PDH・ETW
 | `src/metric.rs` | `Value` / `Unavailable` / `Unsupported` |
 | `src/model.rs` | `RawSample` と `Snapshot` |
 | `src/collector.rs` | 後から足す Collector のトレイト |
-| `src/platform/windows.rs` | Toolhelp、GetProcessTimes、GetProcessMemoryInfo |
+| `src/platform/windows.rs` | Toolhelp、GetProcessTimes、GetProcessMemoryInfo。CPU とメモリの式は変えない |
+| `src/platform/disk.rs` | GetProcessIoCounters と PhysicalDisk PDH。物理転送量とは別 |
+| `src/platform/network.rs` | GetIfTable2。プロセス帰属はしない |
+| `src/platform/gpu.rs` | GPU Engine と GPU Process/Adapter Memory。使用率は最大 |
+| `src/devices.rs` | デバイスごとの読み書きを、欠けを 0 にせず合わせる |
 | `src/platform/stub.rs` | Windows 以外。数値を作らない |
 | `src/aggregate.rs` | CPU% とバイト毎秒 |
 | `src/history.rs` | リングバッファ |
