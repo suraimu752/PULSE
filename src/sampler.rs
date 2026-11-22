@@ -125,6 +125,8 @@ pub struct SamplerHandle {
     join: Option<JoinHandle<()>>,
     /// One snapshot kept for a screenshot of selection outside the ring.
     retained: Option<Arc<Snapshot>>,
+    /// Detailed per-CPU analysis. Off leaves GetSystemTimes running.
+    cpu_detail: Arc<AtomicBool>,
 }
 
 /// Pin this aligned slot, then publish `extra_steps` newer samples.
@@ -139,7 +141,7 @@ impl SamplerHandle {
     pub fn start(demo: Option<&str>, retain: Option<RetainRequest>) -> Result<Self, String> {
         let shared = SharedLatest::new();
         let stop = Arc::new(AtomicBool::new(false));
-        let (mut core, warmup) = build_core(demo)?;
+        let (mut core, warmup, cpu_detail) = build_core(demo)?;
         for _ in 0..warmup {
             shared.publish(core.tick());
         }
@@ -166,7 +168,17 @@ impl SamplerHandle {
             stop,
             join: Some(join),
             retained,
+            cpu_detail,
         })
+    }
+
+    /// Turn detailed per-CPU analysis on or off. Overall CPU is unchanged.
+    pub fn set_cpu_detail(&self, on: bool) {
+        self.cpu_detail.store(on, Ordering::SeqCst);
+    }
+
+    pub fn cpu_detail_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.cpu_detail)
     }
 
     pub fn latest(&self) -> SharedLatest {
@@ -187,16 +199,29 @@ impl Drop for SamplerHandle {
     }
 }
 
-fn build_core(demo: Option<&str>) -> Result<(SamplerCore, u32), String> {
+fn build_core(demo: Option<&str>) -> Result<(SamplerCore, u32, Arc<AtomicBool>), String> {
+    let cpu_detail = Arc::new(AtomicBool::new(false));
     #[cfg(feature = "mock")]
     if let Some(name) = demo {
         let scenario = crate::mock::Scenario::parse(name)
             .ok_or_else(|| format!("未知のデモシナリオです: {name}"))?;
-        let mut core =
-            SamplerCore::new(Box::new(crate::mock::MockProbe::new(scenario)), Vec::new());
+        let on = matches!(
+            scenario,
+            crate::mock::Scenario::Cpus
+                | crate::mock::Scenario::Cpus32
+                | crate::mock::Scenario::CpusDenied
+        );
+        cpu_detail.store(on, Ordering::SeqCst);
+        let mut core = SamplerCore::new(
+            Box::new(crate::mock::MockProbe::with_detail(
+                scenario,
+                Arc::clone(&cpu_detail),
+            )),
+            Vec::new(),
+        );
         core.demo = true;
         let warmup = u32::try_from(history_capacity()).unwrap_or(120);
-        return Ok((core, warmup));
+        return Ok((core, warmup, cpu_detail));
     }
     #[cfg(not(feature = "mock"))]
     if demo.is_some() {
@@ -206,8 +231,12 @@ fn build_core(demo: Option<&str>) -> Result<(SamplerCore, u32), String> {
         );
     }
     Ok((
-        SamplerCore::new(platform::make_probe(), platform::make_enrichers()),
+        SamplerCore::new(
+            platform::make_probe(),
+            platform::make_enrichers(Arc::clone(&cpu_detail)),
+        ),
         0,
+        cpu_detail,
     ))
 }
 

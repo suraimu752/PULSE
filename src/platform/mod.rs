@@ -1,5 +1,7 @@
 //! Operating-system boundary. Everything that calls Windows lives under `windows`.
 
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 use std::time::SystemTime;
 #[cfg(not(windows))]
 use std::time::UNIX_EPOCH;
@@ -8,6 +10,8 @@ use crate::collector::{MetricEnricher, SystemProbe};
 
 #[cfg(windows)]
 mod disk;
+#[cfg(windows)]
+mod etw;
 #[cfg(windows)]
 mod gpu;
 #[cfg(windows)]
@@ -30,18 +34,33 @@ pub fn make_probe() -> Box<dyn SystemProbe> {
     }
 }
 
-pub fn make_enrichers() -> Vec<Box<dyn MetricEnricher>> {
+pub fn make_enrichers(cpu_detail: Arc<AtomicBool>) -> Vec<Box<dyn MetricEnricher>> {
     #[cfg(windows)]
     {
         vec![
             Box::new(disk::DiskEnricher::new()),
             Box::new(network::NetworkEnricher::new()),
             Box::new(gpu::GpuEnricher::new()),
+            Box::new(etw::EtwEnricher::new(cpu_detail)),
         ]
     }
     #[cfg(not(windows))]
     {
+        let _ = cpu_detail;
         Vec::new()
+    }
+}
+
+/// Start this same executable with the runas verb. Only call this from a click.
+#[cfg(feature = "ui")]
+pub fn relaunch_elevated() -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        etw::relaunch_elevated()
+    }
+    #[cfg(not(windows))]
+    {
+        Err("この環境では管理者として再起動できません".to_string())
     }
 }
 
@@ -100,7 +119,7 @@ mod tests {
             .iter()
             .map(|process| (process.pid, process.cpu_time_100ns, process.memory_bytes))
             .collect();
-        for enricher in &mut make_enrichers() {
+        for enricher in &mut make_enrichers(Arc::new(AtomicBool::new(false))) {
             enricher.enrich(&mut sample);
         }
         assert_eq!(sample.process_net, ProcessNetMode::NeedsAdmin);

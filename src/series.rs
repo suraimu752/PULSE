@@ -89,6 +89,29 @@ pub fn chart_history<'a>(
     }
 }
 
+/// Per-logical-CPU busy percent across the same 60-second window as the overall graph.
+/// A missing or unsettled reading stays a gap.
+#[cfg(feature = "ui")]
+pub fn logical_cpu_series<'a>(
+    samples: impl Iterator<Item = Option<&'a Snapshot>>,
+    capacity: usize,
+    id: crate::model::LogicalCpuId,
+) -> Vec<Option<f64>> {
+    align(
+        samples.map(|sample| {
+            sample.and_then(|sample| {
+                sample
+                    .cpu_detail
+                    .processors
+                    .iter()
+                    .find(|cpu| cpu.id == id)
+                    .and_then(|cpu| cpu.usage_percent.as_option())
+            })
+        }),
+        capacity,
+    )
+}
+
 /// Detail-graph points for one resource. `None` is a gap, not zero.
 /// A GPU adapter that is missing from a snapshot stays a gap. It is not
 /// replaced with another adapter's max.
