@@ -94,24 +94,24 @@ pub fn rank_caption(resource: ResourceId, adapter_named: bool) -> &'static str {
     match resource {
         ResourceId::Cpu => "この時点の CPU 上位",
         ResourceId::Memory => "この時点のメモリ上位",
-        ResourceId::Disk => "この時点のプロセス I/O 上位（物理ディスクの転送量とは別）",
-        ResourceId::Network => "この時点のプロセス通信上位（アダプター合計とは別）",
-        ResourceId::Gpu3d if adapter_named => "この時点の GPU 3D 上位（選択中のアダプター）",
+        ResourceId::Disk => "この時点のプロセス I/O 上位\n（物理ディスクの転送量とは別）",
+        ResourceId::Network => "この時点のプロセス通信上位\n（アダプター合計とは別）",
+        ResourceId::Gpu3d if adapter_named => "この時点の GPU 3D 上位\n（選択中のアダプター）",
         ResourceId::Gpu3d => "この時点の GPU 3D 上位",
         ResourceId::GpuEncode if adapter_named => {
-            "この時点の GPU Encode 上位（選択中のアダプター）"
+            "この時点の GPU Encode 上位\n（選択中のアダプター）"
         }
         ResourceId::GpuEncode => "この時点の GPU Encode 上位",
         ResourceId::GpuDecode if adapter_named => {
-            "この時点の GPU Decode 上位（選択中のアダプター）"
+            "この時点の GPU Decode 上位\n（選択中のアダプター）"
         }
         ResourceId::GpuDecode => "この時点の GPU Decode 上位",
         ResourceId::VramDedicated if adapter_named => {
-            "この時点の専用 VRAM 上位（選択中のアダプター）"
+            "この時点の専用 VRAM 上位\n（選択中のアダプター）"
         }
         ResourceId::VramDedicated => "この時点の専用 VRAM 上位",
         ResourceId::VramShared if adapter_named => {
-            "この時点の共有 GPU メモリ上位（選択中のアダプター）"
+            "この時点の共有 GPU メモリ上位\n（選択中のアダプター）"
         }
         ResourceId::VramShared => "この時点の共有 GPU メモリ上位",
     }

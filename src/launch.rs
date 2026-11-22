@@ -15,6 +15,8 @@ pub struct LaunchOptions {
     pub resource: Option<i32>,
     /// One-shot history bar to pin after the first snapshot. Screenshot aid.
     pub select_history: Option<i32>,
+    /// Mock seconds to publish after pinning, so the point leaves the ring.
+    pub age_history: Option<u32>,
 }
 
 impl LaunchOptions {
@@ -29,6 +31,7 @@ impl LaunchOptions {
             hide_resource: None,
             resource: None,
             select_history: None,
+            age_history: None,
         };
         let mut args = std::env::args().skip(1);
         while let Some(arg) = args.next() {
@@ -122,13 +125,40 @@ impl LaunchOptions {
                     return Err("棒の番号は 0 以上です".to_string());
                 }
                 options.select_history = Some(index);
+            } else if arg == "--age-history" {
+                let text = args
+                    .next()
+                    .ok_or_else(|| "--age-history の後に秒数が必要です".to_string())?;
+                let seconds: u32 = text
+                    .parse()
+                    .map_err(|_| format!("秒数が整数ではありません: {text}"))?;
+                if seconds == 0 {
+                    return Err("--age-history は 1 秒以上です".to_string());
+                }
+                options.age_history = Some(seconds);
             } else if arg == "--help" || arg == "-h" {
                 return Err(help_text());
             } else {
                 return Err(format!("未知の引数です: {arg}\n{}", help_text()));
             }
         }
+        if options.age_history.is_some() && options.demo.is_none() {
+            return Err("--age-history は --demo と一緒に指定します".to_string());
+        }
+        if options.age_history.is_some() && options.select_history.is_none() {
+            return Err("--age-history には --select-history も必要です".to_string());
+        }
         Ok(options)
+    }
+
+    /// Screenshot plan: keep the chosen slot, then move the mock clock forward.
+    pub fn retained_pin(&self) -> Option<crate::sampler::RetainRequest> {
+        let seconds = self.age_history?;
+        let index = usize::try_from(self.select_history?).ok()?;
+        let step_ms = crate::config::CPU_SAMPLE_INTERVAL.as_millis().max(1);
+        let steps = (u128::from(seconds) * 1000 / step_ms).max(1);
+        let extra_steps = u32::try_from(steps).unwrap_or(u32::MAX);
+        Some(crate::sampler::RetainRequest { index, extra_steps })
     }
 }
 
@@ -149,7 +179,7 @@ fn parse_size(text: &str) -> Result<(f32, f32), String> {
 }
 
 fn help_text() -> String {
-    "[--size 1280x720] [--page process|performance] [--theme light|dark|system] [--resource cpu|memory|disk|network|gpu3d|gpu-encode|gpu-decode|vram|shared] [--select-history N] [--menu columns|resources] [--hide-column disk] [--hide-resource gpu-encode] [--demo normal|many|gaps|special|history]\n--demo は mock feature 付きの開発ビルドだけが受け付けます。--select-history は 60 秒軸の棒を一度だけ固定します。列と資源の表示は %APPDATA%\\PULSE\\ui.cfg（Linux では ~/.config/PULSE/ui.cfg）に保存します。".to_string()
+    "[--size 1280x720] [--page process|performance] [--theme light|dark|system] [--resource cpu|memory|disk|network|gpu3d|gpu-encode|gpu-decode|vram|shared] [--select-history N] [--age-history 秒] [--menu columns|resources] [--hide-column disk] [--hide-resource gpu-encode] [--demo normal|many|gaps|special|history]\n--demo は mock feature 付きの開発ビルドだけが受け付けます。--select-history は 60 秒軸の棒を一度だけ固定します。--age-history はその点を固定したあと、モックの時計だけを進め、リングから外れた選択を残します。列と資源の表示は %APPDATA%\\PULSE\\ui.cfg（Linux では ~/.config/PULSE/ui.cfg）に保存します。".to_string()
 }
 
 #[cfg(test)]

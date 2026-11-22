@@ -32,7 +32,7 @@ cargo run --features mock -- --demo normal --page performance --size 1280x720 --
 cargo run --features mock -- --demo history --page performance --size 1280x720 --theme dark --select-history 59
 ```
 
-`--resource` は `cpu` / `memory` / `disk` / `network` / `gpu3d` / `gpu-encode` / `gpu-decode` / `vram` / `shared` です。`--select-history N` は 60 秒軸の N 番目の棒を一度だけ固定します。どちらも画面確認用です。
+`--resource` は `cpu` / `memory` / `disk` / `network` / `gpu3d` / `gpu-encode` / `gpu-decode` / `vram` / `shared` です。`--select-history N` は 60 秒軸の N 番目の棒を一度だけ固定します。`--age-history SECONDS` は `--demo` と `--select-history` と一緒のときだけ使えます。固定した記録を残したまま模擬時計を進め、グラフの外に出た選択（「選択中：○分○秒前」、選択線なし）を確認します。どれも画面確認用です。
 
 ## 主な機能（Phase 1）
 

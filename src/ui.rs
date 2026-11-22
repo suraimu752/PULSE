@@ -41,6 +41,8 @@ struct UiState {
     adapter: Option<u64>,
     rank_cache: Option<RankCache>,
     pending_slot: Option<i32>,
+    /// Screenshot aid: a snapshot already evicted from the ring.
+    pending_retained: Option<Arc<Snapshot>>,
     rows: Rc<VecModel<ProcessRow>>,
     top: Rc<VecModel<TopRow>>,
     detail_points: Rc<VecModel<f32>>,
@@ -56,7 +58,8 @@ struct UiState {
 }
 
 pub fn run(options: LaunchOptions) -> Result<(), String> {
-    let sampler = SamplerHandle::start(options.demo.as_deref())?;
+    let mut sampler = SamplerHandle::start(options.demo.as_deref(), options.retained_pin())?;
+    let retained = sampler.take_retained();
     let ui = AppWindow::new().map_err(|err| format!("ウィンドウを作成できませんでした: {err}"))?;
     ui.set_version_text(format!("PULSE {}", env!("CARGO_PKG_VERSION")).into());
     ui.set_page(options.page);
@@ -83,7 +86,12 @@ pub fn run(options: LaunchOptions) -> Result<(), String> {
         timeline: Vec::new(),
         adapter: None,
         rank_cache: None,
-        pending_slot: options.select_history,
+        pending_slot: if retained.is_some() {
+            None
+        } else {
+            options.select_history
+        },
+        pending_retained: retained,
         rows: Rc::new(VecModel::from(Vec::<ProcessRow>::new())),
         top: Rc::new(VecModel::from(Vec::<TopRow>::new())),
         detail_points: Rc::new(VecModel::from(Vec::<f32>::new())),
@@ -429,6 +437,11 @@ fn apply(ui: &AppWindow, state: &Rc<RefCell<UiState>>, sample: &PublishedSample,
         }
         state.last_sequence = Some(sample.snapshot.sequence);
         state.timeline = sample.timeline.clone();
+        if let Some(snapshot) = state.pending_retained.take() {
+            state.selection.pin(snapshot);
+            state.pending_slot = None;
+            state.rank_cache = None;
+        }
         if let Some(index) = state.pending_slot.take() {
             pin_slot(&mut state, index);
         }
@@ -499,7 +512,7 @@ fn paint_history(
     resource: ResourceId,
     sample: &PublishedSample,
 ) {
-    let (adapter, shown, cursor, pinned, label, rows, caption, empty) = {
+    let (adapter, shown, cursor, pinned, lines, rows, caption, empty) = {
         let mut state = state.borrow_mut();
         let adapter = if gpu_resource(resource) {
             state.adapter
@@ -517,9 +530,9 @@ fn paint_history(
             .selected()
             .and_then(|selected| slot_of_id(&axis, selected.sequence));
         let pinned = !state.selection.is_live();
-        let label = match state.selection.selected() {
-            Some(selected) => history_label(selected, &sample.snapshot, cursor.is_some()),
-            None => String::new(),
+        let lines = match state.selection.selected() {
+            Some(selected) => history_lines(selected, &sample.snapshot, cursor.is_some()),
+            None => HistoryLines::none(),
         };
         let key = state
             .selection
@@ -563,7 +576,7 @@ fn paint_history(
             shown,
             cursor,
             pinned,
-            label,
+            lines,
             cache.rows.clone(),
             cache.caption.clone(),
             cache.empty.clone(),
@@ -579,7 +592,10 @@ fn paint_history(
     ui.set_detail_graph(detail.show_graph);
     ui.set_history_cursor(cursor.map(|index| index as i32).unwrap_or(-1));
     ui.set_history_pinned(pinned);
-    ui.set_history_label(label.into());
+    ui.set_history_when(lines.when.into());
+    ui.set_history_age(lines.age.into());
+    ui.set_history_interval(lines.interval.into());
+    ui.set_history_outside(lines.outside.into());
     ui.set_rank_caption(caption.into());
     ui.set_rank_empty(
         if empty.is_empty() {
@@ -664,7 +680,26 @@ fn hover_text(state: &UiState, index: i32) -> String {
     format!("{clock}  {}", detail.value)
 }
 
-fn history_label(selected: &Snapshot, latest: &Snapshot, in_window: bool) -> String {
+struct HistoryLines {
+    when: String,
+    age: String,
+    interval: String,
+    outside: String,
+}
+
+impl HistoryLines {
+    fn none() -> Self {
+        Self {
+            when: String::new(),
+            age: String::new(),
+            interval: String::new(),
+            outside: String::new(),
+        }
+    }
+}
+
+/// Separate lines so a narrow pane cannot break inside 「（30秒前）」.
+fn history_lines(selected: &Snapshot, latest: &Snapshot, in_window: bool) -> HistoryLines {
     let age = format_age(
         latest
             .monotonic
@@ -676,9 +711,19 @@ fn history_label(selected: &Snapshot, latest: &Snapshot, in_window: bool) -> Str
         None => "区間は未確定".to_string(),
     };
     if in_window {
-        format!("選択中 {clock}（{age}）  {interval}")
+        HistoryLines {
+            when: format!("選択中 {clock}"),
+            age,
+            interval,
+            outside: String::new(),
+        }
     } else {
-        format!("選択中：{age}（{clock}、{interval}）。この時点は直近 60 秒のグラフの外です")
+        HistoryLines {
+            when: format!("選択中：{age}"),
+            age: clock,
+            interval,
+            outside: "この時点は直近 60 秒のグラフの外です".to_string(),
+        }
     }
 }
 
@@ -844,6 +889,37 @@ fn sync_model<T: Clone + 'static>(model: &VecModel<T>, mut next: Vec<T>) {
     }
     while model.row_count() > target {
         let _ = model.remove(model.row_count() - 1);
+    }
+}
+
+#[cfg(test)]
+mod history_line_tests {
+    use super::history_lines;
+    use crate::model::Snapshot;
+    use std::time::{Duration, Instant, SystemTime};
+
+    #[test]
+    fn selection_text_keeps_the_age_on_its_own_line() {
+        let origin = Instant::now();
+        let mut selected = Snapshot::bare(1, origin);
+        selected.interval = Some(Duration::from_millis(500));
+        selected.taken_at = SystemTime::UNIX_EPOCH + Duration::from_secs(30);
+        let inside = history_lines(
+            &selected,
+            &Snapshot::bare(2, origin + Duration::from_secs(30)),
+            true,
+        );
+        assert_eq!(inside.age, "30秒前");
+        assert!(!inside.when.contains('（'));
+        assert!(inside.outside.is_empty());
+        let outside = history_lines(
+            &selected,
+            &Snapshot::bare(3, origin + Duration::from_secs(70)),
+            false,
+        );
+        assert_eq!(outside.when, "選択中：1分10秒前");
+        assert_eq!(outside.interval, "区間 500 ms");
+        assert!(outside.outside.contains("グラフの外"));
     }
 }
 
