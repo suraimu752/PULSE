@@ -25,6 +25,8 @@ PULSE を変更するエージェント向けの作業規則です。仕様の�
 | Aggregator | `src/aggregate.rs` | 区間の使用率と速度 |
 | Collector | `src/collector.rs`, `src/platform/` | OS の読み取り |
 | History | `src/history.rs` | 固定長リングバッファ |
+| Selection | `src/pick.rs` | クリック位置から 1 つのスナップショットへ。選択中の 1 点だけリングの外でも保持 |
+| Ranking | `src/rank.rs` | 1 つのスナップショットからの上位 5。現在値で過去を埋めない |
 | Model | `src/model.rs`, `src/metric.rs` | 層の間で渡す型 |
 
 Collector を足すときは `MetricEnricher` を実装する。UI の列はすでにあり、`MetricValue::Unsupported` のままなら `未対応` と出る。
@@ -34,6 +36,7 @@ Collector を足すときは `MetricEnricher` を実装する。UI の列はす�
 - 間隔の定数は `src/config.rs`。表示更新と計測間隔は別
 - 履歴は全プロセスを保持する。保存時点で上位 5 件だけにする実装は禁止
 - 過去スナップショットを、いまの値で上書きしない
+- 選択中の 1 点以外に、リングの外の履歴を残さない。過去の順位を現在値から作らない。`N/A` を 0 として順位に入れない
 - プロセス識別は PID に加え、取れた場合は作成 FILETIME
 - 新しい Windows API は Microsoft Learn の説明を優先し、採用理由を `docs/decisions.md` に残す
 
