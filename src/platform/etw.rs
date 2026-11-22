@@ -10,19 +10,20 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Instant;
 
-use windows::core::PCWSTR;
+use windows::core::{GUID, PCWSTR};
 use windows::Win32::Foundation::{
-    CloseHandle, ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS, ERROR_SUCCESS,
-    ERROR_WMI_INSTANCE_NOT_FOUND,
+    CloseHandle, GetLastError, ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS, ERROR_SUCCESS,
+    ERROR_WMI_INSTANCE_NOT_FOUND, WIN32_ERROR,
 };
 use windows::Win32::System::Diagnostics::Etw::{
     CloseTrace, ControlTraceW, OpenTraceW, PerfInfoGuid, ProcessGuid, ProcessTrace, StartTraceW,
     SystemTraceControlGuid, ThreadGuid, CONTROLTRACE_HANDLE, EVENT_RECORD,
     EVENT_TRACE_CONTROL_QUERY, EVENT_TRACE_CONTROL_STOP, EVENT_TRACE_FLAG_CSWITCH,
-    EVENT_TRACE_FLAG_DPC, EVENT_TRACE_FLAG_INTERRUPT, EVENT_TRACE_FLAG_PROCESS,
-    EVENT_TRACE_FLAG_THREAD, EVENT_TRACE_LOGFILEW, EVENT_TRACE_PROPERTIES,
-    EVENT_TRACE_REAL_TIME_MODE, EVENT_TRACE_SYSTEM_LOGGER_MODE, PROCESSTRACE_HANDLE,
-    PROCESS_TRACE_MODE_EVENT_RECORD, PROCESS_TRACE_MODE_REAL_TIME, WNODE_FLAG_TRACED_GUID,
+    EVENT_TRACE_FLAG_DPC, EVENT_TRACE_FLAG_INTERRUPT, EVENT_TRACE_FLAG_NO_SYSCONFIG,
+    EVENT_TRACE_FLAG_PROCESS, EVENT_TRACE_FLAG_THREAD, EVENT_TRACE_LOGFILEW,
+    EVENT_TRACE_PROPERTIES, EVENT_TRACE_REAL_TIME_MODE, EVENT_TRACE_SYSTEM_LOGGER_MODE,
+    PROCESSTRACE_HANDLE, PROCESS_TRACE_MODE_EVENT_RECORD, PROCESS_TRACE_MODE_REAL_TIME,
+    WNODE_FLAG_TRACED_GUID,
 };
 use windows::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
@@ -37,6 +38,11 @@ use crate::cpudetail::{parse_switch_tids, CpuEvent, SwitchLedger};
 use crate::model::{CpuDetailSnapshot, LogicalCpuId, RawProcess, RawSample};
 
 const SESSION: &str = "PULSE-CPU";
+/// Private system-logger id. Must not be `SystemTraceControlGuid`: that GUID
+/// means the NT Kernel Logger, and StartTrace then rejects any other name
+/// with ERROR_INVALID_PARAMETER (87).
+/// <https://learn.microsoft.com/windows/win32/etw/configuring-and-starting-a-systemtraceprovider-session>
+const SESSION_GUID: GUID = GUID::from_u128(0x8f4c2e91_6b3d_4a17_9c58_2e7d4b1a0f63);
 const CSWITCH: u8 = 36;
 const START: u8 = 1;
 const END: u8 = 2;
@@ -92,7 +98,7 @@ impl EtwEnricher {
                 ledger.seed_thread(tid, pid, 0, "");
             }
         }
-        stop_stale_session();
+        stop_own_session()?;
         let control = start_session()?;
         let mut name = session_wide();
         let opened = open_consumer(inner.as_mut(), &mut name).inspect_err(|_| {
@@ -167,6 +173,10 @@ impl MetricEnricher for EtwEnricher {
         if let Err(err) = self.ensure() {
             sample.cpu_detail = match err {
                 SessionError::Denied => CpuDetailSnapshot::needs_admin(),
+                SessionError::Exists => CpuDetailSnapshot::unavailable(format!(
+                    "ETW セッションを開始できませんでした（{}）",
+                    win32("StartTrace", ERROR_ALREADY_EXISTS)
+                )),
                 SessionError::Message(text) => CpuDetailSnapshot::unavailable(text),
             };
             return;
@@ -203,14 +213,38 @@ fn note_process(ledger: &mut SwitchLedger, process: &RawProcess) {
 
 enum SessionError {
     Denied,
+    /// Our session name is already running. Never means some other name.
+    Exists,
     Message(String),
 }
 
+fn win32(api: &str, status: WIN32_ERROR) -> String {
+    format!("{api}: WIN32_ERROR({})", status.0)
+}
+
 fn start_session() -> Result<CONTROLTRACE_HANDLE, SessionError> {
+    match start_once() {
+        Err(SessionError::Exists) => {
+            stop_own_session()?;
+            match start_once() {
+                Err(SessionError::Exists) => Err(SessionError::Message(format!(
+                    "ETW セッションを開始できませんでした（{}）",
+                    win32("StartTrace", ERROR_ALREADY_EXISTS)
+                ))),
+                other => other,
+            }
+        }
+        other => other,
+    }
+}
+
+fn start_once() -> Result<CONTROLTRACE_HANDLE, SessionError> {
     let mut block = TraceBlock::new();
     let mut handle = CONTROLTRACE_HANDLE::default();
-    // SAFETY: `block` is zeroed, sized, and holds the session name for the call.
-    let status = unsafe { StartTraceW(&mut handle, block.name_ptr(), block.as_mut_ptr()) };
+    let name = session_wide();
+    // SAFETY: `block` covers the properties plus the logger-name slot.
+    // StartTrace copies `name` into that slot. The name is only `PULSE-CPU`.
+    let status = unsafe { StartTraceW(&mut handle, PCWSTR(name.as_ptr()), block.as_mut_ptr()) };
     if status == ERROR_SUCCESS {
         return Ok(handle);
     }
@@ -218,46 +252,54 @@ fn start_session() -> Result<CONTROLTRACE_HANDLE, SessionError> {
         return Err(SessionError::Denied);
     }
     if status == ERROR_ALREADY_EXISTS {
-        stop_stale_session();
-        let mut block = TraceBlock::new();
-        let status = unsafe { StartTraceW(&mut handle, block.name_ptr(), block.as_mut_ptr()) };
-        if status == ERROR_SUCCESS {
-            return Ok(handle);
-        }
-        if status == ERROR_ACCESS_DENIED {
-            return Err(SessionError::Denied);
-        }
-        return Err(SessionError::Message(format!(
-            "ETW セッションを開始できませんでした（{status:?}）"
-        )));
+        return Err(SessionError::Exists);
     }
     Err(SessionError::Message(format!(
-        "ETW セッションを開始できませんでした（{status:?}）"
+        "ETW セッションを開始できませんでした（{}）",
+        win32("StartTrace", status)
     )))
 }
 
-fn stop_stale_session() {
+/// Stop `PULSE-CPU` only. A missing session is success. Any other name is
+/// never passed to ControlTrace.
+fn stop_own_session() -> Result<(), SessionError> {
     let mut block = TraceBlock::new();
+    let name = session_wide();
     let status = unsafe {
         ControlTraceW(
             CONTROLTRACE_HANDLE::default(),
-            block.name_ptr(),
+            PCWSTR(name.as_ptr()),
             block.as_mut_ptr(),
             EVENT_TRACE_CONTROL_QUERY,
         )
     };
-    if status == ERROR_WMI_INSTANCE_NOT_FOUND || status != ERROR_SUCCESS {
-        return;
+    if status == ERROR_WMI_INSTANCE_NOT_FOUND {
+        return Ok(());
+    }
+    if status != ERROR_SUCCESS {
+        return Err(SessionError::Message(format!(
+            "ETW セッションを確認できませんでした（{}）",
+            win32("ControlTrace", status)
+        )));
     }
     let mut block = TraceBlock::new();
-    let _ = unsafe {
+    let name = session_wide();
+    let status = unsafe {
         ControlTraceW(
             CONTROLTRACE_HANDLE::default(),
-            block.name_ptr(),
+            PCWSTR(name.as_ptr()),
             block.as_mut_ptr(),
             EVENT_TRACE_CONTROL_STOP,
         )
     };
+    if status == ERROR_SUCCESS || status == ERROR_WMI_INSTANCE_NOT_FOUND {
+        Ok(())
+    } else {
+        Err(SessionError::Message(format!(
+            "ETW セッションを停止できませんでした（{}）",
+            win32("ControlTrace", status)
+        )))
+    }
 }
 
 fn stop_handle(handle: CONTROLTRACE_HANDLE) {
@@ -302,9 +344,11 @@ fn open_consumer(inner: &mut Inner, name: &mut [u16]) -> Result<PROCESSTRACE_HAN
     // context points at `inner`, which the session owns until ProcessTrace returns.
     let handle = unsafe { OpenTraceW(&mut logfile) };
     if handle.Value == u64::MAX {
-        return Err(SessionError::Message(
-            "ETW セッションを開けませんでした".to_string(),
-        ));
+        let status = unsafe { GetLastError() };
+        return Err(SessionError::Message(format!(
+            "ETW セッションを開けませんでした（{}）",
+            win32("OpenTrace", status)
+        )));
     }
     Ok(handle)
 }
@@ -478,6 +522,15 @@ fn session_wide() -> Vec<u16> {
     SESSION.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
+/// Two buffers per logical processor, which is ETW's per-processor floor.
+/// Maximum stays at least 64, and never below the minimum.
+fn buffer_limits(logical_processors: usize) -> (u32, u32) {
+    let processors = u32::try_from(logical_processors.max(1)).unwrap_or(u32::MAX);
+    let minimum = processors.saturating_mul(2).max(4);
+    let maximum = minimum.max(64);
+    (minimum, maximum)
+}
+
 #[repr(C)]
 struct TraceBlock {
     props: EVENT_TRACE_PROPERTIES,
@@ -494,27 +547,29 @@ impl TraceBlock {
         let n = wide.len().min(block.name.len());
         block.name[..n].copy_from_slice(&wide[..n]);
         block.name[block.name.len() - 1] = 0;
+        let (minimum, maximum) = buffer_limits(logical_cpus().len());
         block.props.Wnode.BufferSize = u32::try_from(std::mem::size_of::<Self>()).unwrap_or(0);
-        block.props.Wnode.Guid = SystemTraceControlGuid;
+        // A private system logger needs its own GUID. SystemTraceControlGuid
+        // is only valid for the session named NT Kernel Logger.
+        debug_assert_ne!(SESSION_GUID, SystemTraceControlGuid);
+        block.props.Wnode.Guid = SESSION_GUID;
         block.props.Wnode.Flags = WNODE_FLAG_TRACED_GUID;
         block.props.Wnode.ClientContext = 1;
         block.props.BufferSize = 64;
-        block.props.MinimumBuffers = 16;
-        block.props.MaximumBuffers = 64;
+        block.props.MinimumBuffers = minimum;
+        block.props.MaximumBuffers = maximum;
         block.props.FlushTimer = 1;
         block.props.LogFileMode = EVENT_TRACE_REAL_TIME_MODE | EVENT_TRACE_SYSTEM_LOGGER_MODE;
+        block.props.LogFileNameOffset = 0;
         block.props.EnableFlags = EVENT_TRACE_FLAG_PROCESS
             | EVENT_TRACE_FLAG_THREAD
             | EVENT_TRACE_FLAG_CSWITCH
             | EVENT_TRACE_FLAG_DPC
-            | EVENT_TRACE_FLAG_INTERRUPT;
+            | EVENT_TRACE_FLAG_INTERRUPT
+            | EVENT_TRACE_FLAG_NO_SYSCONFIG;
         block.props.LoggerNameOffset =
-            u32::try_from(std::mem::size_of::<EVENT_TRACE_PROPERTIES>()).unwrap_or(0);
+            u32::try_from(std::mem::offset_of!(TraceBlock, name)).unwrap_or(0);
         block
-    }
-
-    fn name_ptr(&self) -> PCWSTR {
-        PCWSTR(self.name.as_ptr())
     }
 
     fn as_mut_ptr(&mut self) -> *mut EVENT_TRACE_PROPERTIES {
@@ -549,4 +604,49 @@ pub fn relaunch_elevated() -> Result<(), String> {
         return Err("管理者としての再起動を開始できませんでした".to_string());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn twenty_four_cpus_get_two_buffers_each() {
+        assert_eq!(buffer_limits(24), (48, 64));
+        assert_eq!(buffer_limits(4), (8, 64));
+        assert_eq!(buffer_limits(64), (128, 128));
+        assert_eq!(buffer_limits(0), (4, 64));
+    }
+
+    #[test]
+    fn private_system_logger_properties_are_a_valid_starttrace_block() {
+        let block = TraceBlock::new();
+        let props = &block.props;
+        let bytes = u32::try_from(std::mem::size_of::<TraceBlock>()).unwrap();
+        let name_at = u32::try_from(std::mem::offset_of!(TraceBlock, name)).unwrap();
+        assert_eq!(props.Wnode.BufferSize, bytes);
+        assert!(props.Wnode.BufferSize > name_at);
+        assert_eq!(props.Wnode.Flags, WNODE_FLAG_TRACED_GUID);
+        assert_eq!(props.Wnode.ClientContext, 1);
+        assert_ne!(props.Wnode.Guid, SystemTraceControlGuid);
+        assert_ne!(props.Wnode.Guid, GUID::from_u128(0));
+        assert_eq!(props.Wnode.Guid, SESSION_GUID);
+        assert_eq!(props.LoggerNameOffset, name_at);
+        assert_eq!(props.LogFileNameOffset, 0);
+        let name_bytes = u32::try_from(session_wide().len() * 2).unwrap();
+        assert!(name_at + name_bytes <= props.Wnode.BufferSize);
+        assert_eq!(
+            props.LogFileMode,
+            EVENT_TRACE_REAL_TIME_MODE | EVENT_TRACE_SYSTEM_LOGGER_MODE
+        );
+        let flags = props.EnableFlags.0;
+        assert_ne!(flags & EVENT_TRACE_FLAG_CSWITCH.0, 0);
+        assert_ne!(flags & EVENT_TRACE_FLAG_THREAD.0, 0);
+        assert_ne!(flags & EVENT_TRACE_FLAG_PROCESS.0, 0);
+        assert_eq!(props.BufferSize, 64);
+        assert!(props.MinimumBuffers >= 4);
+        assert!(props.MaximumBuffers >= props.MinimumBuffers);
+        let wide = session_wide();
+        assert_eq!(&block.name[..wide.len()], wide.as_slice());
+    }
 }

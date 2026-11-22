@@ -152,7 +152,8 @@
 
 比較した公式資料（Microsoft Learn）:
 
-- [EVENT_TRACE_PROPERTIES / StartTrace](https://learn.microsoft.com/windows/win32/api/evntrace/ns-evntrace-event_trace_properties)。カーネルロガーは `EVENT_TRACE_SYSTEM_LOGGER_MODE` と `SystemTraceControlGuid`、権限は管理者
+- [EVENT_TRACE_PROPERTIES / StartTrace](https://learn.microsoft.com/windows/win32/api/evntrace/ns-evntrace-event_trace_properties)。`EnableFlags` はシステムロガーか NT Kernel Logger でだけ有効。権限は管理者
+- [私有の SystemTraceProvider セッション](https://learn.microsoft.com/windows/win32/etw/configuring-and-starting-a-systemtraceprovider-session)。`EVENT_TRACE_SYSTEM_LOGGER_MODE` と私有のセッション名を使う。`Wnode.Guid` は `SystemTraceControlGuid` にしてはならない。それは `NT Kernel Logger` 専用で、別名と組むと `StartTrace` が `ERROR_INVALID_PARAMETER`（87）を返す
 - [CSwitch](https://learn.microsoft.com/windows/win32/etw/cswitch)。スイッチ時刻、入ったスレッド、出たスレッド、論理プロセッサ
 - [SampledProfile](https://learn.microsoft.com/windows/win32/etw/sampledprofile)。一定間隔のサンプル。短い実行は取りこぼす
 - [Configuring and Starting the SystemTraceProvider Session](https://learn.microsoft.com/windows/win32/etw/configuring-and-starting-a-systemtraceprovider-session)。`NT Kernel Logger` は共有セッションで、他のアプリが使っているものを止めてはならない
@@ -168,8 +169,9 @@
 セッション:
 
 - 名前は `PULSE-CPU` だけ。`NT Kernel Logger` は開始も停止もしない
-- `StartTraceW` / `ControlTraceW` / `OpenTraceW` / `ProcessTrace`。リアルタイム、システムロガー、クロックは QPC（`Wnode.ClientContext = 1`）
-- フラグは Process、Thread、CSwitch、DPC、Interrupt。バッファは 64 KB、最小 16、最大 64、FlushTimer 1 秒。大きくしすぎない
+- `StartTraceW` / `ControlTraceW` / `OpenTraceW` / `ProcessTrace`。`LogFileMode` は `EVENT_TRACE_SYSTEM_LOGGER_MODE | EVENT_TRACE_REAL_TIME_MODE`。`LogFileNameOffset` は 0。クロックは QPC（`Wnode.ClientContext = 1`）。`Wnode.Flags` は `WNODE_FLAG_TRACED_GUID`。`Wnode.Guid` は PULSE 専用の GUID で、`SystemTraceControlGuid` ではない。`Wnode.BufferSize` は構造体とセッション名の領域を含む
+- フラグは Process、Thread、CSwitch、DPC、Interrupt、NoSysConfig。`EnableTraceEx2` とは混ぜない。バッファは 1 本 64 KB。最小本数は論理プロセッサ数の 2 倍（24 論理なら 48）、最大はその値と 64 の大きい方。FlushTimer は 1 秒
+- 失敗した API 名を画面に出す（例: `StartTrace: WIN32_ERROR(87)`）。183（`ERROR_ALREADY_EXISTS`）のときは `PULSE-CPU` だけを止めてから再試行する
 - 起動時に同名を `ControlTrace` QUERY する。自分の残りなら STOP してから START する。`ERROR_WMI_INSTANCE_NOT_FOUND` は新規開始。他の名前は触らない
 - 正常終了で自分のセッションだけ STOP し、トレースを閉じ、スレッドを join する
 - `ERROR_ACCESS_DENIED` は権限不足。他の機能は続ける。画面は「詳細なCPUプロセス分析には管理者権限が必要です」
