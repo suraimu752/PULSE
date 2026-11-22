@@ -109,6 +109,9 @@ pub struct RawSample {
     pub gpu_presence: GpuPresence,
     pub processes: Vec<RawProcess>,
     pub warning: Option<String>,
+    /// Filled by the ETW enricher or the mock. The aggregator copies it through.
+    /// It does not feed [`Snapshot::cpu_percent`].
+    pub cpu_detail: CpuDetailSnapshot,
 }
 
 impl RawSample {
@@ -137,6 +140,7 @@ impl RawSample {
             gpu_presence: GpuPresence::Unknown,
             processes: Vec::new(),
             warning: None,
+            cpu_detail: CpuDetailSnapshot::off(),
         }
     }
 }
@@ -208,6 +212,9 @@ pub struct Snapshot {
     pub gpu_presence: GpuPresence,
     pub processes: Vec<ProcessSnapshot>,
     pub warning: Option<String>,
+    /// Per-logical-processor breakdown. Empty and [`CpuDetailState::Off`] unless
+    /// detailed analysis is on. This never replaces [`Self::cpu_percent`].
+    pub cpu_detail: CpuDetailSnapshot,
 }
 
 /// One physical disk or one network adapter. These rates are not per-process.
@@ -353,6 +360,114 @@ impl Snapshot {
             gpu_presence: GpuPresence::Unknown,
             processes: Vec::new(),
             warning: None,
+            cpu_detail: CpuDetailSnapshot::off(),
+        }
+    }
+}
+
+/// Windows processor group plus the number inside that group.
+///
+/// A logical processor is not a physical core. Display order is sorted by
+/// `(group, number)` and may be shown as CPU 0, CPU 1, but the identity is
+/// this pair, not the slot in a vector.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct LogicalCpuId {
+    pub group: u16,
+    pub number: u8,
+}
+
+impl LogicalCpuId {
+    /// `index` is the ETW processor index (`group * 64 + number`).
+    pub fn from_processor_index(index: u32) -> Self {
+        Self {
+            group: u16::try_from(index / 64).unwrap_or(u16::MAX),
+            number: u8::try_from(index % 64).unwrap_or(63),
+        }
+    }
+}
+
+/// Why per-logical-CPU process time is or is not usable.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CpuDetailState {
+    /// The user turned detailed analysis off. Overall CPU still updates.
+    Off,
+    /// The ETW session could not start without elevation.
+    NeedsAdmin,
+    /// The session failed, events were lost, or the first interval is not settled.
+    Unavailable,
+    /// This interval's per-CPU times are usable.
+    Ready,
+}
+
+/// One process's time on one logical processor during one interval.
+///
+/// `percent` is `cpu_time / interval`, not the machine-wide GetSystemTimes ratio.
+/// Idle is never stored here. Time that could not be tied to a process is not
+/// stored here either.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LogicalCpuProcess {
+    pub key: ProcessKey,
+    pub name: String,
+    pub cpu_time_100ns: u64,
+    pub percent: f64,
+}
+
+/// One logical processor in one snapshot.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LogicalCpuSample {
+    pub id: LogicalCpuId,
+    pub usage_percent: MetricValue<f64>,
+    pub processes: Vec<LogicalCpuProcess>,
+}
+
+/// Aggregated ETW (or mock) view attached to a snapshot.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CpuDetailSnapshot {
+    pub state: CpuDetailState,
+    pub message: String,
+    pub lost_events: u64,
+    pub events_in_interval: u64,
+    /// Time spent folding events into this interval, for the diagnostics line.
+    pub aggregate_nanos: u64,
+    /// Mean of ready per-CPU busy percents. Compared with GetSystemTimes, not mixed into it.
+    pub mean_busy_percent: Option<f64>,
+    pub processors: Vec<LogicalCpuSample>,
+}
+
+impl CpuDetailSnapshot {
+    pub fn off() -> Self {
+        Self {
+            state: CpuDetailState::Off,
+            message: String::new(),
+            lost_events: 0,
+            events_in_interval: 0,
+            aggregate_nanos: 0,
+            mean_busy_percent: None,
+            processors: Vec::new(),
+        }
+    }
+
+    pub fn needs_admin() -> Self {
+        Self {
+            state: CpuDetailState::NeedsAdmin,
+            message: "詳細なCPUプロセス分析には管理者権限が必要です".to_string(),
+            lost_events: 0,
+            events_in_interval: 0,
+            aggregate_nanos: 0,
+            mean_busy_percent: None,
+            processors: Vec::new(),
+        }
+    }
+
+    pub fn unavailable(message: impl Into<String>) -> Self {
+        Self {
+            state: CpuDetailState::Unavailable,
+            message: message.into(),
+            lost_events: 0,
+            events_in_interval: 0,
+            aggregate_nanos: 0,
+            mean_busy_percent: None,
+            processors: Vec::new(),
         }
     }
 }

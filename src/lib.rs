@@ -6,6 +6,7 @@
 mod aggregate;
 mod collector;
 mod config;
+mod cpudetail;
 mod devices;
 mod format;
 mod gpuagg;
