@@ -65,6 +65,21 @@ pub fn format_bytes_per_sec(value: MetricValue<f64>) -> String {
     }
 }
 
+/// Per-process network cell. `needs_admin` replaces a missing reading with an
+/// explicit state instead of a fake zero. A real reading still wins.
+pub fn format_network_cell(
+    send: MetricValue<f64>,
+    recv: MetricValue<f64>,
+    needs_admin: bool,
+) -> (String, DisplayKind) {
+    let (text, kind) = format_rate_pair(send, recv);
+    if needs_admin && !matches!(kind, DisplayKind::Value | DisplayKind::Zero) {
+        ("要管理者".to_string(), DisplayKind::Unavailable)
+    } else {
+        (text, kind)
+    }
+}
+
 pub fn format_rate_pair(read: MetricValue<f64>, write: MetricValue<f64>) -> (String, DisplayKind) {
     match (finite_rate(read), finite_rate(write)) {
         (MetricValue::Unsupported, MetricValue::Unsupported) => {

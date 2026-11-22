@@ -1,0 +1,139 @@
+//! Command line for the window. Demo mode exists only in builds with the `mock` feature.
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct LaunchOptions {
+    pub demo: Option<String>,
+    pub size: Option<(f32, f32)>,
+    pub page: i32,
+    /// 0 light, 1 dark, 2 system. `None` leaves the default (system).
+    pub theme: Option<i32>,
+    /// `columns` or `resources`. Opens that menu after the window is created.
+    pub menu: Option<String>,
+    pub hide_column: Option<String>,
+    pub hide_resource: Option<String>,
+}
+
+impl LaunchOptions {
+    pub fn from_env() -> Result<Self, String> {
+        let mut options = Self {
+            demo: None,
+            size: None,
+            page: 0,
+            theme: None,
+            menu: None,
+            hide_column: None,
+            hide_resource: None,
+        };
+        let mut args = std::env::args().skip(1);
+        while let Some(arg) = args.next() {
+            if arg == "--demo" {
+                let name = args.next().ok_or_else(|| {
+                    "--demo の後に normal、many、gaps、special のいずれかが必要です".to_string()
+                })?;
+                #[cfg(feature = "mock")]
+                {
+                    crate::mock::Scenario::parse(&name).ok_or_else(|| {
+                        format!("未知のデモシナリオです: {name}（normal / many / gaps / special）")
+                    })?;
+                    options.demo = Some(name);
+                }
+                #[cfg(not(feature = "mock"))]
+                {
+                    let _ = name;
+                    return Err(
+                        "このビルドに DEMO DATA は入っていません。--features mock で起動してください。"
+                            .to_string(),
+                    );
+                }
+            } else if arg == "--size" {
+                let text = args
+                    .next()
+                    .ok_or_else(|| "--size の後に 1280x720 のような寸法が必要です".to_string())?;
+                options.size = Some(parse_size(&text)?);
+            } else if arg == "--page" {
+                let text = args.next().ok_or_else(|| {
+                    "--page の後に process または performance が必要です".to_string()
+                })?;
+                options.page = match text.as_str() {
+                    "process" | "0" => 0,
+                    "performance" | "1" => 1,
+                    other => {
+                        return Err(format!(
+                            "未知のページです: {other}（process または performance）"
+                        ))
+                    }
+                };
+            } else if arg == "--theme" {
+                let text = args.next().ok_or_else(|| {
+                    "--theme の後に light、dark、system のいずれかが必要です".to_string()
+                })?;
+                options.theme = Some(match text.as_str() {
+                    "light" | "0" => 0,
+                    "dark" | "1" => 1,
+                    "system" | "2" => 2,
+                    other => {
+                        return Err(format!(
+                            "未知のテーマです: {other}（light / dark / system）"
+                        ))
+                    }
+                });
+            } else if arg == "--menu" {
+                let text = args.next().ok_or_else(|| {
+                    "--menu の後に columns または resources が必要です".to_string()
+                })?;
+                if text != "columns" && text != "resources" {
+                    return Err(format!(
+                        "未知のメニューです: {text}（columns または resources）"
+                    ));
+                }
+                options.menu = Some(text);
+            } else if arg == "--hide-column" {
+                let text = args
+                    .next()
+                    .ok_or_else(|| "--hide-column の後に列名が必要です".to_string())?;
+                options.hide_column = Some(text);
+            } else if arg == "--hide-resource" {
+                let text = args
+                    .next()
+                    .ok_or_else(|| "--hide-resource の後に資源名が必要です".to_string())?;
+                options.hide_resource = Some(text);
+            } else if arg == "--help" || arg == "-h" {
+                return Err(help_text());
+            } else {
+                return Err(format!("未知の引数です: {arg}\n{}", help_text()));
+            }
+        }
+        Ok(options)
+    }
+}
+
+fn parse_size(text: &str) -> Result<(f32, f32), String> {
+    let (width, height) = text
+        .split_once(['x', 'X'])
+        .ok_or_else(|| format!("寸法の形式が違います: {text}"))?;
+    let width: f32 = width
+        .parse()
+        .map_err(|_| format!("幅が数値ではありません: {width}"))?;
+    let height: f32 = height
+        .parse()
+        .map_err(|_| format!("高さが数値ではありません: {height}"))?;
+    if width < 800.0 || height < 560.0 {
+        return Err("最小サイズは 800x560 です".to_string());
+    }
+    Ok((width, height))
+}
+
+fn help_text() -> String {
+    "[--size 1280x720] [--page process|performance] [--theme light|dark|system] [--menu columns|resources] [--hide-column disk] [--hide-resource gpu-encode] [--demo normal|many|gaps|special]\n--demo は mock feature 付きの開発ビルドだけが受け付けます。列と資源の表示は %APPDATA%\\PULSE\\ui.cfg（Linux では ~/.config/PULSE/ui.cfg）に保存します。".to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn size_rejects_a_window_smaller_than_the_minimum() {
+        assert!(parse_size("640x480").is_err());
+        assert_eq!(parse_size("1280x720").unwrap(), (1280.0, 720.0));
+    }
+}
