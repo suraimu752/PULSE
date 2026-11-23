@@ -85,6 +85,30 @@ pub fn apps_use_light_theme() -> Option<bool> {
     }
 }
 
+/// What the footer should say about this process token.
+///
+/// Windows reads `TokenElevation`. A failed query is not reported as a normal
+/// user. Other systems cannot read the token, so they stay undecided.
+#[cfg_attr(not(feature = "ui"), allow(dead_code))]
+pub fn privilege_label() -> &'static str {
+    match privilege_state() {
+        Some(true) => "管理者として動作",
+        Some(false) => "通常のユーザー権限で動作",
+        None => "権限は未判定",
+    }
+}
+
+fn privilege_state() -> Option<bool> {
+    #[cfg(windows)]
+    {
+        windows::token_is_elevated()
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
 pub fn format_local_hms(time: SystemTime) -> String {
     #[cfg(windows)]
     {
@@ -101,6 +125,16 @@ pub fn format_local_hms(time: SystemTime) -> String {
         let minutes = (secs / 60) % 60;
         let seconds = secs % 60;
         format!("{hours:02}:{minutes:02}:{seconds:02} UTC")
+    }
+}
+
+#[cfg(all(test, not(windows)))]
+mod tests {
+    use super::privilege_label;
+
+    #[test]
+    fn non_windows_does_not_pretend_to_know_the_token() {
+        assert_eq!(privilege_label(), "権限は未判定");
     }
 }
 

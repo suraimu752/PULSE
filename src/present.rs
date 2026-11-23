@@ -212,7 +212,7 @@ fn present_detail_system(snapshot: &Snapshot, resource: ResourceId) -> DetailTex
                 logical_processor_text(snapshot.logical_processors),
                 interval_text(snapshot)
             ),
-            note: "全論理プロセッサの容量に対する使用率です。分母は GetSystemTimes のカーネル時間＋ユーザー時間（アイドルを含む総プロセッサ時間）、分子は同じ区間のビジー時間（カーネル−アイドル＋ユーザー）です。プロセス行の CPU は GetProcessTimes のカーネル＋ユーザー時間を同じ分母で割った値です。100% は全論理プロセッサが使用中という意味です。最初の 1 区間は差分がないため N/A です。論理プロセッサごとの割合は、その CPU 上の時間を区間の長さで割った別の値です。".to_string(),
+            note: String::new(),
             show_graph: !matches!(snapshot.cpu_percent, MetricValue::Unsupported),
             graph_is_memory: false,
         },
@@ -221,7 +221,7 @@ fn present_detail_system(snapshot: &Snapshot, resource: ResourceId) -> DetailTex
             value: format_memory_pair(snapshot.memory_used_bytes, snapshot.memory_total_bytes),
             kind: memory_kind(snapshot.memory_used_bytes, snapshot.memory_total_bytes),
             extra: memory_extra(snapshot),
-            note: "システムの使用量は GlobalMemoryStatusEx の物理メモリ合計から利用可能量を引いた値です。プロセスのメモリはプライベートワーキングセット（GetProcessMemoryInfo / PROCESS_MEMORY_COUNTERS_EX2.PrivateWorkingSetSize）で、約 1 秒ごとに更新します。タスクマネージャーの「アクティブプライベートワーキングセット」とは定義が少し違うため、数値は完全には一致しないことがあります。グラフは使用率です。".to_string(),
+            note: String::new(),
             show_graph: !matches!(snapshot.memory_total_bytes, MetricValue::Unsupported),
             graph_is_memory: true,
         },
@@ -230,22 +230,29 @@ fn present_detail_system(snapshot: &Snapshot, resource: ResourceId) -> DetailTex
             snapshot.disk_read_bps,
             snapshot.disk_write_bps,
             &disk_extra(snapshot),
-            "プロセス列の読み書きは I/O カウンタの増分です。物理ディスクの転送量とは別で、ここには足し合わせていません。",
         ),
         ResourceId::Network => network_detail(snapshot),
-        ResourceId::Gpu3d => gpu_detail(snapshot, "GPU 3D", snapshot.gpu_3d_percent, GpuEngine::ThreeD),
-        ResourceId::GpuEncode => {
-            gpu_detail(snapshot, "GPU Encode", snapshot.gpu_encode_percent, GpuEngine::Encode)
-        }
-        ResourceId::GpuDecode => {
-            gpu_detail(snapshot, "GPU Decode", snapshot.gpu_decode_percent, GpuEngine::Decode)
-        }
-        ResourceId::VramDedicated => vram_detail(
+        ResourceId::Gpu3d => gpu_detail(
             snapshot,
-            "専用 VRAM",
-            snapshot.vram_dedicated_bytes,
-            true,
+            "GPU 3D",
+            snapshot.gpu_3d_percent,
+            GpuEngine::ThreeD,
         ),
+        ResourceId::GpuEncode => gpu_detail(
+            snapshot,
+            "GPU Encode",
+            snapshot.gpu_encode_percent,
+            GpuEngine::Encode,
+        ),
+        ResourceId::GpuDecode => gpu_detail(
+            snapshot,
+            "GPU Decode",
+            snapshot.gpu_decode_percent,
+            GpuEngine::Decode,
+        ),
+        ResourceId::VramDedicated => {
+            vram_detail(snapshot, "専用 VRAM", snapshot.vram_dedicated_bytes, true)
+        }
         ResourceId::VramShared => vram_detail(
             snapshot,
             "共有 GPU メモリ",
@@ -320,7 +327,6 @@ fn rate_detail(
     read: MetricValue<f64>,
     write: MetricValue<f64>,
     extra: &str,
-    note: &str,
 ) -> DetailText {
     let (value, kind) = format_rate_pair(read, write);
     DetailText {
@@ -328,7 +334,7 @@ fn rate_detail(
         value,
         kind,
         extra: extra.to_string(),
-        note: note.to_string(),
+        note: String::new(),
         show_graph: !matches!(
             (read, write),
             (MetricValue::Unsupported, MetricValue::Unsupported)
@@ -374,10 +380,7 @@ fn network_detail(snapshot: &Snapshot) -> DetailText {
         extra.push_str("    プロセス別の帰属は要管理者");
     }
     if unsupported && !admin {
-        return unsupported_detail(
-            "ネットワーク",
-            "ネットワークの送受信速度を計測する Collector はまだ接続されていません。未対応は実測の 0 ではありません。",
-        );
+        return unsupported_detail("ネットワーク");
     }
     DetailText {
         title: "ネットワーク".to_string(),
@@ -392,7 +395,7 @@ fn network_detail(snapshot: &Snapshot) -> DetailText {
             kind
         },
         extra,
-        note: "上の速度はアダプターの送受信です。プロセスに帰属できる速度とは別の計測値です。カーネルのネットワーク追跡は通常ユーザーでは使わないため、プロセス列は要管理者と出します。欠測は 0 にしません。".to_string(),
+        note: String::new(),
         show_graph: !unsupported,
         graph_is_memory: false,
     }
@@ -410,16 +413,13 @@ fn gpu_detail(
             value: "なし".to_string(),
             kind: DisplayKind::Unsupported,
             extra: "GPU エンジンのカウンタが見つかりませんでした。".to_string(),
-            note: "GPU が無い、またはドライバが GPU Engine カウンタを出していません。0% とは表示しません。".to_string(),
+            note: String::new(),
             show_graph: false,
             graph_is_memory: false,
         };
     }
     if snapshot.gpu_presence == GpuPresence::Unknown && matches!(value, MetricValue::Unsupported) {
-        return unsupported_detail(
-            title,
-            "GPU 使用率を計測する Collector はまだ接続されていません。複数エンジンを足して 100% を超える値にはしません。未対応は実測の 0 ではありません。",
-        );
+        return unsupported_detail(title);
     }
     let extra = if snapshot.gpus.is_empty() {
         interval_text(snapshot)
@@ -443,7 +443,7 @@ fn gpu_detail(
         value: format_percent(value),
         kind: percent_kind(value),
         extra,
-        note: "同じ種類のエンジンが複数あるときは最大値を使います。3D と Encode と Decode は足しません。アダプターは LUID で区別します。".to_string(),
+        note: String::new(),
         show_graph: !matches!(value, MetricValue::Unsupported),
         graph_is_memory: false,
     }
@@ -461,16 +461,13 @@ fn vram_detail(
             value: "なし".to_string(),
             kind: DisplayKind::Unsupported,
             extra: "GPU がありません。".to_string(),
-            note: "専用メモリと共有メモリは別の値です。0 バイトとは表示しません。".to_string(),
+            note: String::new(),
             show_graph: false,
             graph_is_memory: false,
         };
     }
     if snapshot.gpu_presence == GpuPresence::Unknown && matches!(value, MetricValue::Unsupported) {
-        return unsupported_detail(
-            title,
-            "GPU メモリを計測する Collector はまだ接続されていません。専用と共有は別の値です。未対応は実測の 0 ではありません。",
-        );
+        return unsupported_detail(title);
     }
     let extra = if snapshot.gpus.is_empty() {
         interval_text(snapshot)
@@ -494,7 +491,7 @@ fn vram_detail(
         value: format_bytes(value),
         kind: bytes_kind(value),
         extra,
-        note: "GPU Process Memory カウンタの専用使用量と共有使用量です。ドライバによって 0 や遅れた値になることがあります。プロセス間で共有分を足すと二重に数えることがあるため、アダプターごとの値を併記します。".to_string(),
+        note: String::new(),
         show_graph: !matches!(value, MetricValue::Unsupported),
         graph_is_memory: false,
     }
@@ -553,13 +550,13 @@ pub fn top_entries(snapshot: &Snapshot, resource: ResourceId, limit: usize) -> V
         .collect()
 }
 
-fn unsupported_detail(title: &str, note: &str) -> DetailText {
+fn unsupported_detail(title: &str) -> DetailText {
     DetailText {
         title: title.to_string(),
         value: "未対応".to_string(),
         kind: DisplayKind::Unsupported,
-        extra: "Collector は未接続です".to_string(),
-        note: note.to_string(),
+        extra: "未対応".to_string(),
+        note: String::new(),
         show_graph: false,
         graph_is_memory: false,
     }

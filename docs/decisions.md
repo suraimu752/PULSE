@@ -122,7 +122,7 @@
 
 ## 18. 列と資源の並び、分割
 
-- 採用: プロセスの列はヘッダーを横にドラッグするか、「列」メニューのチェックと上下で並べ替え・非表示にする。名前は消せない。表の横幅は表示中の列だけを足す
+- 採用: プロセスの列はヘッダーをドラッグして並べ替える。離した位置に 2px の挿入線を出す。右クリックで列名とチェックのメニューを開き、表示を切り替える。上下ボタンと「列」ボタンは置かない。名前は消せない。表の横幅は表示中の列だけを足す。並びと表示はこれまでどおり `ui.cfg`
 - 採用: パフォーマンスの資源も「項目」メニューで同じことをする。表示中が 1 件のときはそれ以上隠さない。選択中を隠したら、並びの次の表示中へ移す
 - 採用: 左の資源一覧と右の詳細の境目をドラッグする。左は 180px 以上、右は 260px 以上。窓が狭いときは希望幅をその範囲へ縮める
 - 採用: 並びと幅は `%APPDATA%\PULSE\ui.cfg` に書く。Linux では `XDG_CONFIG_HOME/PULSE`、無ければ `~/.config/PULSE`。`PULSE_CONFIG_DIR` があればそこ。ネットワークには出さない
@@ -175,7 +175,7 @@
 - 失敗した API 名を画面に出す（例: `StartTrace: WIN32_ERROR(87)`）。183（`ERROR_ALREADY_EXISTS`）のときは `PULSE-CPU` だけを止めてから再試行する
 - 起動時に同名を `ControlTrace` QUERY する。自分の残りなら STOP してから START する。`ERROR_WMI_INSTANCE_NOT_FOUND` は新規開始。他の名前は触らない
 - 正常終了で自分のセッションだけ STOP し、トレースを閉じ、スレッドを join する
-- `ERROR_ACCESS_DENIED` は権限不足。他の機能は続ける。画面は「詳細なCPUプロセス分析には管理者権限が必要です」
+- `ERROR_ACCESS_DENIED` は権限不足。他の機能は続ける。画面は「要管理者」。式の説明は画面に出さず、この節と第 4 節に残す
 - 欠測（`EventsLost` の増分）がある区間は全体を `N/A` にする。最初の区間が閉じるまでは `N/A`。0 で埋めない
 
 アイドル、System、DPC、不明:
@@ -199,9 +199,12 @@
 
 ## 22. 既定で管理者として起動する
 
-- 採用: Windows の `PULSE.exe` は、アプリケーションマニフェストの `requestedExecutionLevel` を `requireAdministrator` にする。MSVC（CI の `windows-latest`）はリンカの `/MANIFESTUAC:level=requireAdministrator`。GNU は `assets/windows/pulse.exe.manifest` を `windres` でリソース ID 1・タイプ 24 として、そのバイナリだけにリンクする
+- 採用: Windows の `PULSE.exe` は、アプリケーションマニフェストの `requestedExecutionLevel` を `requireAdministrator` にする。GNU も MSVC も `assets/windows/pulse.exe.manifest` をリソース ID 1・タイプ 24 として、そのバイナリにリンクする。MSVC は `rc.exe` で `.res` を作り、`cargo:rustc-link-arg-bin=PULSE` でそのファイルだけを渡す。`/MANIFEST:EMBED` は足さない（リソースとリンカ生成マニフェストが重なるとリンクが失敗する）
+- 撤回: 一度入れた `/MANIFESTUAC` だけ。このフラグは、リンカがマニフェストを書いているときだけ効く。rustc は `/MANIFEST:NO` で、RT_MANIFEST を出さない。その結果、CI がアップロードした `PULSE.exe` には `.rsrc` が無く、`requireAdministrator` の文字列も無かった。Windows は asInvoker で起動し、UAC は出なかった。フッタの「通常のユーザー権限で動作」はトークンを読んでおらず、固定の文だった
 - 撤回するもの: 第 10 節の「起動時には昇格しない」。オーナーの「デフォルトで管理者権限にして」が、Phase 4 の非昇格を上書きする
-- 範囲: GNU（手元のクロス確認）は `.cargo/config.toml` のリンカ `assets/windows/link-wrap.sh` が、出力名がちょうど `PULSE.exe` のときだけマニフェストリソースを足す。`PULSE-<hash>.exe` には足さない。MSVC（CI の `windows-latest` がアップロードする exe）は `/MANIFESTUAC:level=requireAdministrator` を `cargo:rustc-link-arg-bin=PULSE` で渡す。Cargo 1.100 ではこの指示が `src/main.rs` の空の `--test` ハーネスにも付く。`src/main.rs` にテストは無いので、CI のテストは `cargo test --lib --tests` にし、そのハーネスを起動しない。`requireAdministrator` がテストに付くと、Windows の `cargo test` が UAC で止まったり失敗したりする
+- 範囲: GNU（手元のクロス確認）は `.cargo/config.toml` のリンカ `assets/windows/link-wrap.sh` が、出力名がちょうど `PULSE.exe` のときだけマニフェストリソースを足す。`PULSE-<hash>.exe` には足さない。MSVC の `.res` も `rustc-link-arg-bin=PULSE` なので、Cargo 1.100 では `src/main.rs` の空の `--test` ハーネスにも付く。`src/main.rs` にテストは無いので、CI のテストは `cargo test --lib --tests` にし、そのハーネスを起動しない。`requireAdministrator` がテストに付くと、Windows の `cargo test` が UAC で止まったり失敗したりする
+- 確認: CI はアップロード前に `target/release/PULSE.exe` のバイト列を ASCII と UTF-16 で探し、`requestedExecutionLevel` と `requireAdministrator` が無ければ失敗する。`level="asInvoker"` があれば失敗する。`rc.exe` が無い MSVC ビルドは、マニフェストの無い exe を出さず panic する
+- 画面: フッタは `OpenProcessToken` と `GetTokenInformation(TokenElevation)` の結果。「管理者として動作」「通常のユーザー権限で動作」。読めないとき、および Windows 以外は「権限は未判定」。固定文には戻さない
 - 残すもの: 権限不足の `N/A`、`要管理者`、`NeedsAdmin`、ボタン「管理者として再起動」。昇格できない文脈（UAC を互換性で外した起動、テスト、Linux）でも、欠測を 0 にしない
 - UAC: この設定では、起動のたびに同意のプロンプトが出る。ユーザーが拒否するとプロセスは始まらない。始まってから権限が足りない場合だけ、従来の欠測表示に落ちる
 - 自動起動: いまは未実装（ナビの「スタートアップ」は準備中）。後から入れるなら、`Run` キーへ `PULSE.exe` を書くだけでは、ログオンのたびに UAC が出るか、昇格できずに失敗する。最高権限で動かすタスクスケジューラが要る。通常のスタートアップ登録では足りない
@@ -214,7 +217,9 @@
 
 何を見て、どう判断できたら成功か。詳細の大きな数値と 60 秒グラフで、いま重いのか空いているのかが分かり、その下のプロセスか論理 CPU で持ち主が分かる。`N/A` と `未対応` と実測の `0` を取り違えない。
 
-情報の並びは第 16〜21 節で評価済みなので動かさない。変えるのは地、文字の濃さ、針の色、罫の濃さ。Web のブレークポイントや CSS の検査は使わず、Slint の 800×600 とヘッドレスのレイアウトテストで見る。
+情報の並びは第 16〜21 節で評価済みなので、列の意味や計測の定義は動かさない。変えるのは地、文字の濃さ、針の色、罫の濃さ、と、読み物になっている説明文。Web のブレークポイントや CSS の検査は使わず、Slint の 800×600 とヘッドレスのレイアウトテストで見る。
+
+パフォーマンスの左一覧と右の詳細は、角丸のカードをやめ、余白と 1px の罫で分ける。選択中の資源と論理 CPU は、面の色と左の 2px で示す。グラフのプロットだけ細い枠を残す。式、ホバーの使い方、`N/A` の解説は画面から外し、第 4 節と [measurement.md](measurement.md) に残す。権限不足と ETW の失敗は短い状態のまま残す。
 
 参照:
 

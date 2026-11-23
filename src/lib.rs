@@ -80,11 +80,19 @@ mod windows_manifest {
         let build = include_str!("../build.rs");
         assert!(
             build.contains("requireAdministrator"),
-            "the MSVC link line must request the same level as the manifest"
+            "the MSVC build must refuse to ship without this level"
         );
         assert!(
             build.contains("rustc-link-arg-bin=PULSE"),
             "MSVC elevation is attached to the PULSE bin"
+        );
+        assert!(
+            build.contains("1 24"),
+            "the manifest is a resource, not a bare /MANIFESTUAC flag"
+        );
+        assert!(
+            !build.contains("MANIFESTUAC"),
+            "/MANIFESTUAC does not embed a manifest when the linker is not writing one"
         );
         assert!(
             !build.contains("rustc-link-arg-bins"),

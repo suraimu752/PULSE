@@ -59,6 +59,23 @@ jobs:
       - name: Show PULSE.exe
         shell: pwsh
         run: Get-Item target/release/PULSE.exe | Format-List FullName, Length
+      - name: Assert embedded administrator manifest
+        shell: pwsh
+        run: |
+          $path = "target/release/PULSE.exe"
+          if (-not (Test-Path $path)) { throw "missing $path" }
+          $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path $path))
+          $ascii = [System.Text.Encoding]::ASCII.GetString($bytes)
+          $utf16 = [System.Text.Encoding]::Unicode.GetString($bytes)
+          foreach ($text in @("requestedExecutionLevel", "requireAdministrator")) {
+            if (($ascii.IndexOf($text) -lt 0) -and ($utf16.IndexOf($text) -lt 0)) {
+              throw "PULSE.exe is missing manifest text: $text"
+            }
+          }
+          if ($ascii.Contains('level="asInvoker"') -or $utf16.Contains('level="asInvoker"')) {
+            throw "PULSE.exe still requests asInvoker"
+          }
+          Write-Host "embedded requireAdministrator manifest: ok ($($bytes.Length) bytes)"
       - name: Upload PULSE.exe
         uses: actions/upload-artifact@v4
         with:

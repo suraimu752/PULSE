@@ -286,8 +286,9 @@ component HeaderCell inherits Rectangle {
     callback resized(length);
     callback sort-clicked();
     callback wheel-scrolled(length, length);
-    callback context-menu();
-    callback dragged(length);
+    callback context-menu(length, length);
+    callback drag-preview(length);
+    callback drag-drop(length);
 
     width: col-width;
     preferred-width: col-width;
@@ -320,19 +321,23 @@ component HeaderCell inherits Rectangle {
         }
         pointer-event(event) => {
             if (event.button == PointerEventButton.right && event.kind == PointerEventKind.down) {
-                root.context-menu();
+                root.context-menu(self.absolute-position.x, self.absolute-position.y + self.height);
             }
             if (event.button == PointerEventButton.left && event.kind == PointerEventKind.down) {
                 root.down-x = self.mouse-x;
                 root.dragging = false;
             }
             if (event.button == PointerEventButton.left && event.kind == PointerEventKind.up && root.dragging) {
-                root.dragged(self.mouse-x - root.down-x);
+                root.drag-drop(self.mouse-x);
+                root.dragging = false;
             }
         }
         moved => {
             if (self.pressed && (self.mouse-x - root.down-x > 8px || root.down-x - self.mouse-x > 8px)) {
                 root.dragging = true;
+            }
+            if (root.dragging && self.pressed) {
+                root.drag-preview(self.mouse-x);
             }
         }
         scroll-event(event) => {
@@ -583,7 +588,6 @@ component Sparkline inherits Rectangle {
     in property <[float]> points;
     height: 18px;
     background: Theme.graph-plot;
-    border-radius: 3px;
     clip: true;
     HorizontalLayout {
         width: 100%;
@@ -615,15 +619,25 @@ component ResourceButton inherits TouchArea {
     Rectangle {
         width: 100%;
         height: 100%;
-        border-radius: 8px;
-        border-width: 1px;
-        border-color: root.active ? Theme.accent : Theme.line;
-        background: root.pressed ? Theme.card-pressed : root.active ? Theme.nav-selected : root.has-hover ? Theme.card-hover : Theme.card;
+        background: root.pressed ? Theme.nav-pressed : root.active ? Theme.nav-selected : root.has-hover ? Theme.header-hover : transparent;
+        if root.active: Rectangle {
+            x: 0px;
+            y: 0px;
+            width: 2px;
+            height: 100%;
+            background: Theme.accent;
+        }
+        Rectangle {
+            y: parent.height - 1px;
+            width: 100%;
+            height: 1px;
+            background: Theme.line;
+        }
         VerticalLayout {
-            padding-left: 10px;
+            padding-left: 12px;
             padding-right: 10px;
-            padding-top: 6px;
-            padding-bottom: 6px;
+            padding-top: 8px;
+            padding-bottom: 8px;
             spacing: 2px;
             alignment: start;
             Text {
@@ -660,7 +674,6 @@ component HistoryGraph inherits Rectangle {
     preferred-width: 0px;
     horizontal-stretch: 1;
     background: Theme.graph-bg;
-    border-radius: 8px;
     border-width: 1px;
     border-color: Theme.graph-border;
     clip: true;
@@ -777,6 +790,53 @@ component ThemeChip inherits Rectangle {
                 color: root.on ? Theme.accent-text : Theme.text-secondary;
                 horizontal-alignment: center;
                 vertical-alignment: center;
+            }
+        }
+    }
+}
+
+component ColumnCheck inherits Rectangle {
+    in property <string> label;
+    in property <bool> checked;
+    in property <bool> locked: false;
+    callback toggled();
+    height: 28px;
+    touch := TouchArea {
+        width: 100%;
+        height: 100%;
+        enabled: !root.locked;
+        accessible-role: button;
+        accessible-label: root.label + " の表示";
+        clicked => { root.toggled(); }
+        HorizontalLayout {
+            padding-left: 8px;
+            padding-right: 8px;
+            spacing: 8px;
+            alignment: center;
+            Rectangle {
+                width: 14px;
+                height: 14px;
+                border-width: 1px;
+                border-color: root.checked ? Theme.accent : Theme.line;
+                background: transparent;
+                horizontal-stretch: 0;
+                vertical-stretch: 0;
+                Text {
+                    width: 100%;
+                    height: 100%;
+                    text: root.checked ? "✓" : "";
+                    font-size: 11px;
+                    color: Theme.accent;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+            Text {
+                text: root.label;
+                vertical-alignment: center;
+                font-size: 13px;
+                color: root.locked ? Theme.text-muted : Theme.text;
+                overflow: elide;
             }
         }
     }
@@ -925,7 +985,8 @@ export component AppWindow inherits Window {
     in-out property <string> detail-value: "N/A";
     in-out property <int> detail-kind: 2;
     in-out property <string> detail-extra: "";
-    in-out property <string> detail-note: "計測を開始しています。ダミー値は表示しません。";
+    in-out property <string> detail-note: "";
+    in-out property <string> privilege-text: "権限は未判定";
     in-out property <bool> detail-graph: false;
     in-out property <bool> demo: false;
     in-out property <int> history-cursor: -1;
@@ -991,12 +1052,16 @@ export component AppWindow inherits Window {
     in-out property <string> history-outside: "";
     in-out property <string> history-hover: "";
     in-out property <string> rank-caption: "この時点の上位プロセス";
-    in-out property <string> rank-empty: "実測値のあるプロセスはありません。";
+    in-out property <string> rank-empty: "該当なし";
+    in-out property <bool> column-dragging: false;
+    in-out property <length> column-drop-x: 0px;
+    in-out property <length> column-menu-x: 16px;
+    in-out property <length> column-menu-y: 88px;
     in-out property <[string]> gpu-names;
     in-out property <int> gpu-choice: -1;
     callback column-toggled(int);
-    callback column-moved(int, int);
-    callback column-dragged(int, length);
+    callback column-drag-preview(int, length);
+    callback column-drag-drop(int, length);
     callback resource-toggled(int);
     callback resource-moved(int, int);
     callback resource-resized(length);
@@ -1173,7 +1238,7 @@ export component AppWindow inherits Window {
                         x: 16px;
                         y: 0px;
                         width: parent.width - 24px;
-                        text: "通常のユーザー権限で動作";
+                        text: root.privilege-text;
                         font-size: 11px;
                         color: Theme.text-muted;
                         wrap: word-wrap;
@@ -1212,31 +1277,6 @@ export component AppWindow inherits Window {
                         accessible-label: "DEMO DATA";
                     }
                     Rectangle { horizontal-stretch: 1; }
-                    column-menu-button := TouchArea {
-                        width: 72px;
-                        height: 28px;
-                        accessible-role: button;
-                        accessible-label: "列の表示";
-                        clicked => { root.column-menu-open = !root.column-menu-open; }
-                        Rectangle {
-                            width: 100%;
-                            height: 100%;
-                            border-radius: 6px;
-                            border-width: 1px;
-                            border-color: column-menu-button.has-hover ? Theme.accent : Theme.line;
-                            background: column-menu-button.pressed ? Theme.nav-pressed : Theme.card;
-                            Text {
-                                width: 100%;
-                                height: 100%;
-                                text: "列";
-                                font-size: 12px;
-                                font-weight: 600;
-                                color: Theme.text;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
-                        }
-                    }
                 }
                 Text {
                     text: root.status-text;
@@ -1244,15 +1284,8 @@ export component AppWindow inherits Window {
                     color: Theme.text-secondary;
                     wrap: word-wrap;
                 }
-                Text {
-                    text: "N/A は計測不能（権限不足や計測開始直後など）。未対応はこの版では未実装。0 や 0.0% は実測値です。";
-                    font-size: 12px;
-                    color: Theme.text-muted;
-                    wrap: word-wrap;
-                }
                 if root.warning-visible: Rectangle {
                     background: Theme.warn-bg;
-                    border-radius: 6px;
                     border-width: 1px;
                     border-color: Theme.warn-border;
                     height: 36px;
@@ -1269,10 +1302,7 @@ export component AppWindow inherits Window {
                 }
                 process-frame := Rectangle {
                     vertical-stretch: 1;
-                    background: Theme.card;
-                    border-radius: 8px;
-                    border-width: 1px;
-                    border-color: Theme.line;
+                    background: transparent;
                     clip: true;
                     property <length> bar: 14px;
 
@@ -1312,8 +1342,13 @@ export component AppWindow inherits Window {
                                         sort-clicked => { root.sort-requested(root.column-key(id)); }
                                         resized(next) => { Columns.set-width(id, next); }
                                         wheel-scrolled(dx, dy) => { process-frame.scroll-by(dx, dy); }
-                                        context-menu => { root.column-menu-open = true; }
-                                        dragged(dx) => { root.column-dragged(id, dx); }
+                                        context-menu(x, y) => {
+                                            root.column-menu-x = max(8px, min(x, root.width - 288px));
+                                            root.column-menu-y = max(8px, min(y, root.height - 332px));
+                                            root.column-menu-open = true;
+                                        }
+                                        drag-preview(x) => { root.column-drag-preview(id, x); }
+                                        drag-drop(x) => { root.column-drag-drop(id, x); }
                                     }
                                 }
                             }
@@ -1322,6 +1357,13 @@ export component AppWindow inherits Window {
                                 height: 1px;
                                 width: 100%;
                                 background: Theme.line;
+                            }
+                            if root.column-dragging: column-drop := Rectangle {
+                                x: process-list.content-x + root.column-drop-x - 1px;
+                                y: 4px;
+                                width: 2px;
+                                height: parent.height - 8px;
+                                background: Theme.accent;
                             }
                         }
 
@@ -1389,8 +1431,8 @@ export component AppWindow inherits Window {
                         width: max(180px, min(root.resource-pref, max(180px, avail - 266px)));
                         horizontal-stretch: 0;
                         vertical-stretch: 1;
-                        VerticalLayout {
-                            spacing: 6px;
+                            VerticalLayout {
+                            spacing: 0px;
                             padding-right: 4px;
                             horizontal-stretch: 1;
                             HorizontalLayout {
@@ -1567,10 +1609,7 @@ export component AppWindow inherits Window {
                                 vertical-stretch: 1;
                                 min-width: 0px;
                                 min-height: 0px;
-                                background: Theme.card;
-                                border-radius: 8px;
-                                border-width: 1px;
-                                border-color: Theme.line;
+                                background: transparent;
                                 clip: true;
                                 detail-flick := Flickable {
                                     width: 100%;
@@ -1773,12 +1812,22 @@ export component AppWindow inherits Window {
                                                 y: Math.floor(i / columns) * tile-h;
                                                 width: tile-w;
                                                 height: tile-h - 6px;
-                                                border-radius: 8px;
-                                                border-width: card.selected ? 2px : 1px;
-                                                border-color: card.selected ? Theme.accent : Theme.line;
-                                                background: Theme.card;
+                                                background: card.selected ? Theme.nav-selected : transparent;
                                                 clip: true;
                                                 property <bool> on-screen: self.absolute-position.y + self.height > detail-flick.absolute-position.y - 120px && self.absolute-position.y < detail-flick.absolute-position.y + detail-flick.height + 120px;
+                                                if card.selected: Rectangle {
+                                                    x: 0px;
+                                                    y: 0px;
+                                                    width: 2px;
+                                                    height: 100%;
+                                                    background: Theme.accent;
+                                                }
+                                                Rectangle {
+                                                    y: parent.height - 1px;
+                                                    width: 100%;
+                                                    height: 1px;
+                                                    background: Theme.line;
+                                                }
                                                 VerticalLayout {
                                                     padding: 4px;
                                                     spacing: 2px;
@@ -1992,12 +2041,6 @@ export component AppWindow inherits Window {
                                             color: Theme.text-secondary;
                                             wrap: word-wrap;
                                         }
-                                        Text {
-                                            text: "棒に触れると時刻と値だけを予告します。クリックするとその計測を固定し、上位 5 件はその記録だけから計算します。計測は続き、ライブに戻るまで選択は動きません。";
-                                            font-size: 12px;
-                                            color: Theme.text-muted;
-                                            wrap: word-wrap;
-                                        }
                                     }
                                 }
                             }
@@ -2039,42 +2082,27 @@ export component AppWindow inherits Window {
                     clicked => { root.column-menu-open = false; }
                 }
                 column-menu := TouchArea {
-                    x: parent.width - 296px;
-                    y: 52px;
+                    x: root.column-menu-x;
+                    y: root.column-menu-y;
                     width: 280px;
-                    height: 392px;
+                    height: 324px;
                     Rectangle {
                         width: 100%;
                         height: 100%;
                         background: Theme.card;
                         border-width: 1px;
                         border-color: Theme.line;
-                        border-radius: 8px;
                         clip: true;
                     VerticalLayout {
                         width: 100%;
                         padding: 8px;
-                        spacing: 2px;
-                        Text {
-                            text: "列の表示と順序";
-                            width: 100%;
-                            height: 22px;
-                            font-size: 12px;
-                            font-weight: 600;
-                            color: Theme.text;
-                            overflow: elide;
-                            vertical-alignment: center;
-                        }
-                        for id[index] in Columns.order: ArrangeRow {
+                        spacing: 0px;
+                        for id in Columns.order: ColumnCheck {
                             width: 100%;
                             label: root.column-label(id);
                             checked: Columns.shown[id];
                             locked: id == 0;
-                            can-up: index > 0;
-                            can-down: index + 1 < Columns.order.length;
                             toggled => { root.column-toggled(id); }
-                            up => { root.column-moved(id, -1); }
-                            down => { root.column-moved(id, 1); }
                         }
                     }
                     }
@@ -2099,7 +2127,6 @@ export component AppWindow inherits Window {
                         background: Theme.card;
                         border-width: 1px;
                         border-color: Theme.line;
-                        border-radius: 8px;
                         clip: true;
                     VerticalLayout {
                         width: 100%;

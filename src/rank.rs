@@ -119,11 +119,9 @@ pub fn rank_caption(resource: ResourceId, adapter_named: bool) -> &'static str {
 
 pub fn empty_rank_text(status: &RankStatus) -> Option<&'static str> {
     match status {
-        RankStatus::NeedsAdmin => {
-            Some("プロセス別計測には管理者権限が必要です。アダプターの合計は上の値です。順位は作りません。")
-        }
-        RankStatus::Unsupported => Some("この資源のプロセス別計測は未対応です。"),
-        RankStatus::Ranked(rows) if rows.is_empty() => Some("実測値のあるプロセスはありません。"),
+        RankStatus::NeedsAdmin => Some("要管理者"),
+        RankStatus::Unsupported => Some("未対応"),
+        RankStatus::Ranked(rows) if rows.is_empty() => Some("該当なし"),
         RankStatus::Ranked(_) => None,
     }
 }
@@ -485,10 +483,7 @@ mod tests {
         assert!(rank_caption(ResourceId::Disk, false).contains("プロセス I/O"));
         assert!(rank_caption(ResourceId::Network, false).contains("アダプター"));
         assert!(rank_caption(ResourceId::Gpu3d, true).contains("アダプター"));
-        assert_eq!(
-            empty_rank_text(&RankStatus::NeedsAdmin),
-            Some("プロセス別計測には管理者権限が必要です。アダプターの合計は上の値です。順位は作りません。")
-        );
+        assert_eq!(empty_rank_text(&RankStatus::NeedsAdmin), Some("要管理者"));
         assert!(empty_rank_text(&RankStatus::Ranked(Vec::new())).is_some());
         assert!(empty_rank_text(&RankStatus::Ranked(vec![RankedProcess {
             rank: 1,
