@@ -20,14 +20,14 @@ use windows::Win32::System::SystemInformation::{
     GetLocalTime, GetSystemInfo, GlobalMemoryStatusEx, MEMORYSTATUSEX, SYSTEM_INFO,
 };
 use windows::Win32::System::Threading::{
-    GetActiveProcessorCount, GetProcessTimes, GetSystemTimes, OpenProcess, ALL_PROCESSOR_GROUPS,
-    PROCESS_QUERY_LIMITED_INFORMATION,
+    GetActiveProcessorCount, GetCurrentProcess, GetProcessTimes, GetSystemTimes, OpenProcess,
+    ALL_PROCESSOR_GROUPS, PROCESS_QUERY_LIMITED_INFORMATION,
 };
 
 use crate::collector::SystemProbe;
 use crate::config::MEMORY_SAMPLE_INTERVAL;
 use crate::metric::MetricValue;
-use crate::model::{ProcessKey, RawProcess, RawSample};
+use crate::model::{ensure_self_row, ProcessKey, RawProcess, RawSample};
 
 const MAX_PROCESSES: usize = 100_000;
 
@@ -136,6 +136,7 @@ impl WindowsSystemProbe {
             }
         }
 
+        self.stamp_self(&mut processes);
         if refresh_memory {
             self.last_memory_refresh = Some(Instant::now());
         }
@@ -185,6 +186,22 @@ impl WindowsSystemProbe {
         self.memory_cache.insert(key, reading);
         reading
     }
+
+    /// Toolhelp can omit this process, and `OpenProcess` on our own PID can
+    /// fail even when the pseudo-handle still works. Diagnostics read this row.
+    fn stamp_self(&mut self, processes: &mut Vec<RawProcess>) {
+        let pid = std::process::id();
+        // SAFETY: the pseudo-handle is not closed. GetProcessTimes and
+        // GetProcessMemoryInfo accept it.
+        let handle = unsafe { GetCurrentProcess() };
+        let (creation, cpu) = match process_times(handle) {
+            Some((creation, cpu)) => (Some(creation), MetricValue::Value(cpu)),
+            None => (None, MetricValue::Unavailable),
+        };
+        let memory =
+            read_private_working_set(handle, pid, &mut self.private_working_set_unavailable);
+        ensure_self_row(processes, pid, &self_image_name(), creation, cpu, memory);
+    }
 }
 
 impl SystemProbe for WindowsSystemProbe {
@@ -203,6 +220,9 @@ impl SystemProbe for WindowsSystemProbe {
                 sample.warning = warning;
             }
             Err(message) => {
+                let mut processes = Vec::new();
+                self.stamp_self(&mut processes);
+                sample.processes = processes;
                 sample.warning = Some(message);
             }
         }
@@ -246,20 +266,18 @@ fn open_process(pid: u32) -> Option<OwnedHandle> {
 }
 
 fn process_cpu(handle: &OwnedHandle) -> Option<(u64, u64)> {
+    process_times(handle.raw())
+}
+
+fn process_times(handle: HANDLE) -> Option<(u64, u64)> {
     let mut creation = FILETIME::default();
     let mut exit = FILETIME::default();
     let mut kernel = FILETIME::default();
     let mut user = FILETIME::default();
-    // SAFETY: the pointers are valid outs and the handle has query access.
-    let status = unsafe {
-        GetProcessTimes(
-            handle.raw(),
-            &mut creation,
-            &mut exit,
-            &mut kernel,
-            &mut user,
-        )
-    };
+    // SAFETY: the pointers are valid outs. `handle` is either an owned process
+    // handle or the `GetCurrentProcess` pseudo-handle, which is not closed here.
+    let status =
+        unsafe { GetProcessTimes(handle, &mut creation, &mut exit, &mut kernel, &mut user) };
     if status.is_err() {
         return None;
     }
@@ -366,6 +384,17 @@ fn wide_to_string(buffer: &[u16]) -> String {
         .position(|unit| *unit == 0)
         .unwrap_or(buffer.len());
     String::from_utf16_lossy(&buffer[..end])
+}
+
+fn self_image_name() -> String {
+    std::env::current_exe()
+        .ok()
+        .and_then(|path| {
+            path.file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+        })
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "PULSE.exe".to_string())
 }
 
 fn display_name(pid: u32, image: String) -> String {

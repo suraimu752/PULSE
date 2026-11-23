@@ -5,7 +5,7 @@ Phase 1 のプロセスは二つです。
 1. `pulse-sampler` スレッドが Collector を呼び、Aggregator で区間値にし、リングバッファへ押し、最新の `PublishedSample` を共有する
 2. UI スレッド（Slint）が 250 ms ごとにそのスナップショットを読み、ソートして描画する
 
-高頻度の ETW イベントを UI へ直接流す経路は作っていません。将来 ETW を入れる場合も、集計済みの区間値だけをスナップショットに載せます。
+高頻度の ETW イベントを UI へ直接流す経路はありません。論理 CPU の分析をオンにしたときだけ `pulse-etw` がイベントを受け、区間ごとに集計し、その結果だけをスナップショットへ載せます。オフのときはそのスレッドを止めます。
 
 ```
 Windows API / PDH / GetIfTable2
@@ -37,6 +37,8 @@ Windows API / PDH / GetIfTable2
 | `src/model.rs` | `RawSample` と `Snapshot` |
 | `src/collector.rs` | 後から足す Collector のトレイト |
 | `src/platform/windows.rs` | Toolhelp、GetProcessTimes、GetProcessMemoryInfo。CPU とメモリの式は変えない |
+| `src/platform/etw.rs` | 専用セッション `PULSE-CPU`。コンテキストスイッチを区間集計する。他のセッションは止めない |
+| `src/cpudetail.rs` | 論理 CPU の台帳。スイッチ、移動、区間境界、PID と TID の再利用。UI からは順位だけ使う |
 | `src/platform/disk.rs` | GetProcessIoCounters と PhysicalDisk PDH。物理転送量とは別 |
 | `src/platform/network.rs` | GetIfTable2。プロセス帰属はしない |
 | `src/platform/gpu.rs` | GPU Engine と GPU Process/Adapter Memory。使用率は最大 |
@@ -64,6 +66,8 @@ Windows API / PDH / GetIfTable2
 
 ## スレッド
 
-UI は `SamplerHandle` の `SharedLatest`（`Mutex` で包んだ `Arc<PublishedSample>`）だけを読む。ロックを持ったまま描画しない。ウィンドウが閉じると `SamplerHandle` の drop が停止フラグを立て、最大約 50 ms 以内にスレッドを join する。
+UI は `SamplerHandle` の `SharedLatest`（`Mutex` で包んだ `Arc<PublishedSample>`）だけを読む。ロックを持ったまま描画しない。ウィンドウが閉じると `SamplerHandle` の drop が停止フラグを立て、最大約 50 ms 以内にスレッドを join する。ETW をオンにしていたときは、同じ終了で `PULSE-CPU` だけを止め、`pulse-etw` を join する。
+
+論理 CPU のグラフは、画面に近いカードだけ棒を作る。スクロールで外れたカードは見出しだけ残す。
 
 プロセスハンドルはサンプルをまたいで保持しない。各周期で開き、読んで、閉じる。呼び出し回数の削減は後のフェーズで扱う。

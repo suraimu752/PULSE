@@ -58,6 +58,7 @@ pub fn aggregate(previous: Option<&RawSample>, current: &RawSample) -> Snapshot 
         gpu_presence: current.gpu_presence,
         processes,
         warning: current.warning.clone(),
+        cpu_detail: current.cpu_detail.clone(),
     }
 }
 

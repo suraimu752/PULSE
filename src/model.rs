@@ -75,6 +75,46 @@ impl RawProcess {
     }
 }
 
+/// Keep PULSE's own CPU and memory even when Toolhelp omitted this PID or
+/// `OpenProcess` on it failed. A reading that is already present is left alone.
+#[cfg_attr(not(any(windows, test)), allow(dead_code))]
+pub fn ensure_self_row(
+    processes: &mut Vec<RawProcess>,
+    pid: u32,
+    name: &str,
+    creation: Option<u64>,
+    cpu: MetricValue<u64>,
+    memory: MetricValue<u64>,
+) {
+    let has_cpu = matches!(cpu, MetricValue::Value(_));
+    let has_memory = matches!(memory, MetricValue::Value(_));
+    if let Some(existing) = processes.iter_mut().find(|process| process.pid == pid) {
+        if has_cpu && !matches!(existing.cpu_time_100ns, MetricValue::Value(_)) {
+            if existing.creation_time_100ns.is_none() {
+                existing.creation_time_100ns = creation;
+            }
+            existing.cpu_time_100ns = cpu;
+        }
+        if has_memory && !matches!(existing.memory_bytes, MetricValue::Value(_)) {
+            existing.memory_bytes = memory;
+        }
+        return;
+    }
+    if !has_cpu && !has_memory {
+        return;
+    }
+    let label = if name.is_empty() { "PULSE.exe" } else { name };
+    let mut process = RawProcess::new(pid, 0, label);
+    process.creation_time_100ns = creation;
+    if has_cpu {
+        process.cpu_time_100ns = cpu;
+    }
+    if has_memory {
+        process.memory_bytes = memory;
+    }
+    processes.push(process);
+}
+
 /// One polling pass, still in counter form where a rate needs a previous sample.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RawSample {
@@ -109,6 +149,9 @@ pub struct RawSample {
     pub gpu_presence: GpuPresence,
     pub processes: Vec<RawProcess>,
     pub warning: Option<String>,
+    /// Filled by the ETW enricher or the mock. The aggregator copies it through.
+    /// It does not feed [`Snapshot::cpu_percent`].
+    pub cpu_detail: CpuDetailSnapshot,
 }
 
 impl RawSample {
@@ -137,7 +180,19 @@ impl RawSample {
             gpu_presence: GpuPresence::Unknown,
             processes: Vec::new(),
             warning: None,
+            cpu_detail: CpuDetailSnapshot::off(),
         }
+    }
+
+    pub fn note(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        self.warning = Some(match self.warning.take() {
+            Some(existing) if existing.contains(text) => existing,
+            Some(existing) => format!("{existing}; {text}"),
+            None => text.to_string(),
+        });
     }
 }
 
@@ -208,6 +263,9 @@ pub struct Snapshot {
     pub gpu_presence: GpuPresence,
     pub processes: Vec<ProcessSnapshot>,
     pub warning: Option<String>,
+    /// Per-logical-processor breakdown. Empty and [`CpuDetailState::Off`] unless
+    /// detailed analysis is on. This never replaces [`Self::cpu_percent`].
+    pub cpu_detail: CpuDetailSnapshot,
 }
 
 /// One physical disk or one network adapter. These rates are not per-process.
@@ -353,6 +411,174 @@ impl Snapshot {
             gpu_presence: GpuPresence::Unknown,
             processes: Vec::new(),
             warning: None,
+            cpu_detail: CpuDetailSnapshot::off(),
         }
+    }
+}
+
+/// Windows processor group plus the number inside that group.
+///
+/// A logical processor is not a physical core. Display order is sorted by
+/// `(group, number)` and may be shown as CPU 0, CPU 1, but the identity is
+/// this pair, not the slot in a vector.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct LogicalCpuId {
+    pub group: u16,
+    pub number: u8,
+}
+
+impl LogicalCpuId {
+    /// `index` is the ETW processor index (`group * 64 + number`).
+    pub fn from_processor_index(index: u32) -> Self {
+        Self {
+            group: u16::try_from(index / 64).unwrap_or(u16::MAX),
+            number: u8::try_from(index % 64).unwrap_or(63),
+        }
+    }
+}
+
+/// Why per-logical-CPU process time is or is not usable.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CpuDetailState {
+    /// The user turned detailed analysis off. Overall CPU still updates.
+    Off,
+    /// The ETW session could not start without elevation.
+    NeedsAdmin,
+    /// The session failed, events were lost, or the first interval is not settled.
+    Unavailable,
+    /// This interval's per-CPU times are usable.
+    Ready,
+}
+
+/// One process's time on one logical processor during one interval.
+///
+/// `percent` is `cpu_time / interval`, not the machine-wide GetSystemTimes ratio.
+/// Idle is never stored here. Time that could not be tied to a process is not
+/// stored here either.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LogicalCpuProcess {
+    pub key: ProcessKey,
+    pub name: String,
+    pub cpu_time_100ns: u64,
+    pub percent: f64,
+}
+
+/// One logical processor in one snapshot.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LogicalCpuSample {
+    pub id: LogicalCpuId,
+    pub usage_percent: MetricValue<f64>,
+    pub processes: Vec<LogicalCpuProcess>,
+}
+
+/// Aggregated ETW (or mock) view attached to a snapshot.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CpuDetailSnapshot {
+    pub state: CpuDetailState,
+    pub message: String,
+    pub lost_events: u64,
+    pub events_in_interval: u64,
+    /// Time spent folding events into this interval, for the diagnostics line.
+    pub aggregate_nanos: u64,
+    /// Mean of ready per-CPU busy percents. Compared with GetSystemTimes, not mixed into it.
+    pub mean_busy_percent: Option<f64>,
+    pub processors: Vec<LogicalCpuSample>,
+}
+
+impl CpuDetailSnapshot {
+    pub fn off() -> Self {
+        Self {
+            state: CpuDetailState::Off,
+            message: String::new(),
+            lost_events: 0,
+            events_in_interval: 0,
+            aggregate_nanos: 0,
+            mean_busy_percent: None,
+            processors: Vec::new(),
+        }
+    }
+
+    pub fn needs_admin() -> Self {
+        Self {
+            state: CpuDetailState::NeedsAdmin,
+            message: "詳細なCPUプロセス分析には管理者権限が必要です".to_string(),
+            lost_events: 0,
+            events_in_interval: 0,
+            aggregate_nanos: 0,
+            mean_busy_percent: None,
+            processors: Vec::new(),
+        }
+    }
+
+    pub fn unavailable(message: impl Into<String>) -> Self {
+        Self {
+            state: CpuDetailState::Unavailable,
+            message: message.into(),
+            lost_events: 0,
+            events_in_interval: 0,
+            aggregate_nanos: 0,
+            mean_busy_percent: None,
+            processors: Vec::new(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod self_row_tests {
+    use super::*;
+
+    #[test]
+    fn a_missing_self_row_is_filled_from_a_direct_reading() {
+        let mut processes = vec![RawProcess::new(1, 0, "other.exe")];
+        ensure_self_row(
+            &mut processes,
+            42,
+            "PULSE.exe",
+            Some(9),
+            MetricValue::Value(100),
+            MetricValue::Value(4096),
+        );
+        let mine = processes.iter().find(|process| process.pid == 42).unwrap();
+        assert_eq!(mine.cpu_time_100ns, MetricValue::Value(100));
+        assert_eq!(mine.memory_bytes, MetricValue::Value(4096));
+        assert_eq!(mine.creation_time_100ns, Some(9));
+    }
+
+    #[test]
+    fn an_unreadable_self_row_takes_the_direct_reading() {
+        let mut processes = vec![RawProcess::new(42, 0, "PULSE.exe")];
+        ensure_self_row(
+            &mut processes,
+            42,
+            "PULSE.exe",
+            Some(9),
+            MetricValue::Value(50),
+            MetricValue::Value(2048),
+        );
+        assert_eq!(processes.len(), 1);
+        assert_eq!(processes[0].cpu_time_100ns, MetricValue::Value(50));
+        assert_eq!(processes[0].memory_bytes, MetricValue::Value(2048));
+        assert_eq!(processes[0].name, "PULSE.exe");
+    }
+
+    #[test]
+    fn a_real_self_reading_is_not_replaced() {
+        let mut row = RawProcess::new(42, 0, "PULSE.exe");
+        row.creation_time_100ns = Some(3);
+        row.cpu_time_100ns = MetricValue::Value(5);
+        row.memory_bytes = MetricValue::Value(8);
+        let mut processes = vec![row];
+        ensure_self_row(
+            &mut processes,
+            42,
+            "other.exe",
+            Some(9),
+            MetricValue::Value(99),
+            MetricValue::Value(100),
+        );
+        assert_eq!(processes[0].cpu_time_100ns, MetricValue::Value(5));
+        assert_eq!(processes[0].memory_bytes, MetricValue::Value(8));
+        assert_eq!(processes[0].creation_time_100ns, Some(3));
+        assert_eq!(processes[0].name, "PULSE.exe");
     }
 }

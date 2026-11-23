@@ -69,7 +69,7 @@
 
 - 採用: 昇格しない。`PROCESS_QUERY_LIMITED_INFORMATION` のみ。プロセス終了 UI は置かない
 - 理由: 通常ユーザーでの起動が原則で、終了は確認 UI が必要な別機能。誤操作を避ける
-- ETW セッションは Phase 1 では開始しない。停止し忘れは起きない
+- 起動時には昇格しない。詳細な CPU 分析の ETW は、利用者が「分析オン」にしたときだけ専用セッション `PULSE-CPU` を開始する。開始できないときも、全体 CPU とプロセス一覧は続ける。ボタンを押したときだけ「管理者として再起動」する。セッションの扱いと計測方式は第 21 節
 
 ## 11. 自分の負荷の表示
 
@@ -147,3 +147,51 @@
 - 採用: 資源を切り替えても選択は残し、同じスナップショットのその資源を出す。実測が無ければ `N/A`。黙ってライブへ戻さない
 - 代替: リングから落ちたら選択を捨ててライブへ戻す。見ている途中で消えるので不採用
 - 代替: 60 秒を超える履歴を全部残す。メモリが時間とともに伸びるので不採用。追加で残すのは選択中の 1 点だけ
+
+## 21. 論理プロセッサごとの CPU 時間
+
+比較した公式資料（Microsoft Learn）:
+
+- [EVENT_TRACE_PROPERTIES / StartTrace](https://learn.microsoft.com/windows/win32/api/evntrace/ns-evntrace-event_trace_properties)。`EnableFlags` はシステムロガーか NT Kernel Logger でだけ有効。権限は管理者
+- [私有の SystemTraceProvider セッション](https://learn.microsoft.com/windows/win32/etw/configuring-and-starting-a-systemtraceprovider-session)。`EVENT_TRACE_SYSTEM_LOGGER_MODE` と私有のセッション名を使う。`Wnode.Guid` は `SystemTraceControlGuid` にしてはならない。それは `NT Kernel Logger` 専用で、別名と組むと `StartTrace` が `ERROR_INVALID_PARAMETER`（87）を返す
+- [CSwitch](https://learn.microsoft.com/windows/win32/etw/cswitch)。スイッチ時刻、入ったスレッド、出たスレッド、論理プロセッサ
+- [SampledProfile](https://learn.microsoft.com/windows/win32/etw/sampledprofile)。一定間隔のサンプル。短い実行は取りこぼす
+- [Configuring and Starting the SystemTraceProvider Session](https://learn.microsoft.com/windows/win32/etw/configuring-and-starting-a-systemtraceprovider-session)。`NT Kernel Logger` は共有セッションで、他のアプリが使っているものを止めてはならない
+
+採用: コンテキストスイッチ（CSwitch）。ある論理プロセッサの使用率は、そのプロセッサ上で実行した時間 ÷ 区間の長さ × 100。プロセスの割合も同じ分母。全体 CPU（`GetSystemTimes` のビジー ÷ 全プロセッサ時間）とは分母が違う。
+
+理由: 指示は「その CPU の時間 ÷ 区間」であり、サンプル数からの推定ではない。スレッドが CPU を移ったとき、入った側と出た側で別々に積むにはスイッチ時刻が要る。区間をまたぐ実行は、区間境界で切る。サンプリングは短いバーストを落とす。
+
+代替: CPU Sample Profile。オーバーヘッドは下げやすいが、割合が推定になり、移動と区間境界を時刻で割れない。不採用。
+
+オーバーヘッドの抑え方: 既定はオフ。オンのときだけ専用セッションを開始し、イベントスレッドで区間集計し、UI には 500 ms ごとの集計だけを渡す。オフにしたらセッションを止め、高頻度の処理をしない。全体 CPU の式は変えない。
+
+セッション:
+
+- 名前は `PULSE-CPU` だけ。`NT Kernel Logger` は開始も停止もしない
+- `StartTraceW` / `ControlTraceW` / `OpenTraceW` / `ProcessTrace`。`LogFileMode` は `EVENT_TRACE_SYSTEM_LOGGER_MODE | EVENT_TRACE_REAL_TIME_MODE`。`LogFileNameOffset` は 0。クロックは QPC（`Wnode.ClientContext = 1`）。`Wnode.Flags` は `WNODE_FLAG_TRACED_GUID`。`Wnode.Guid` は PULSE 専用の GUID で、`SystemTraceControlGuid` ではない。`Wnode.BufferSize` は構造体とセッション名の領域を含む
+- フラグは Process、Thread、CSwitch、DPC、Interrupt、NoSysConfig。`EnableTraceEx2` とは混ぜない。バッファは 1 本 64 KB。最小本数は論理プロセッサ数の 2 倍（24 論理なら 48）、最大はその値と 64 の大きい方。FlushTimer は 1 秒
+- 失敗した API 名を画面に出す（例: `StartTrace: WIN32_ERROR(87)`）。183（`ERROR_ALREADY_EXISTS`）のときは `PULSE-CPU` だけを止めてから再試行する
+- 起動時に同名を `ControlTrace` QUERY する。自分の残りなら STOP してから START する。`ERROR_WMI_INSTANCE_NOT_FOUND` は新規開始。他の名前は触らない
+- 正常終了で自分のセッションだけ STOP し、トレースを閉じ、スレッドを join する
+- `ERROR_ACCESS_DENIED` は権限不足。他の機能は続ける。画面は「詳細なCPUプロセス分析には管理者権限が必要です」
+- 欠測（`EventsLost` の増分）がある区間は全体を `N/A` にする。最初の区間が閉じるまでは `N/A`。0 で埋めない
+
+アイドル、System、DPC、不明:
+
+- スレッド ID 0 または PID 0 はアイドル。順位に入れない
+- PID 4（System）は、スレッド開始で身元が付いたときだけ実在のプロセスとして順位に入れる
+- DPC / ISR は実行中スレッドの時間から差し引く。どのプロセスにも足さない。opcode は古い `PERFINFO_LOG_TYPE_DPC` (0x14) と `PERFINFO_LOG_TYPE_INTERRUPT` (0x15)。Windows 11 の opcode が違うと差し引けず、実行中スレッドに残る。実機で確認する
+- スレッド開始が無く、終了後に同じ TID が再登場した場合は、別プロセスへ推測で付けない。Unknown とし、どのプロセスの時間にも加えない
+- 起動時の Toolhelp スレッド一覧は、その時点で見えた身元であり、推測ではない。すでに終了済みの TID は種にしない
+- プロセス名は ETW のイメージ文字列ではなく、既存のプロセススナップショット（PID と作成時刻）から付ける。作成時刻が無い時間は、後から別プロセスの時間として確定しない
+
+身元: 内部はプロセッサグループとグループ内番号（ETW の ProcessorIndex を 64 で割った商と余り）。画面の「CPU 0」はその並びの表示順であり、物理コアではない。配列の添字だけを身元にしない。
+
+履歴: 各スナップショットが、グループ、論理番号、区間、使用率、プロセスごとの CPU 時間、計測状態を持つ。30 秒前の CPU 5 の順位は、その枠に記録した時間だけから作る。いまの値では作らない。選択の保持は第 20 節のまま（`Arc` 1 本、時間ではライブに戻さない、「ライブに戻る」か別の点だけ）。全体表示と論理 CPU 表示の切替、CPU の切替では、選んだ時刻を捨てない。カードの見出しをクリックすると CPU だけ選ぶ。グラフの中をクリックすると、その CPU とその時刻の両方を選ぶ。
+
+`GetSystemTimes` の全体使用率と、ETW の論理 CPU 使用率の平均は一致しないことがある。区間の境界が揃わない、DPC をプロセスから外す、欠測で区間を捨てる、アイドルの定義が違う、ためである。イベント時刻と区間の終端は同じ時計に載せる。`PROCESS_TRACE_MODE_RAW_TIMESTAMP` を付け、最初の生スタンプが `QueryPerformanceCounter` に近ければ終端も QPC（`TRACE_LOGFILE_HEADER.PerfFreq` がその周波数と違うときは、実測が QPC に一致した方を優先する）。生スタンプが FILETIME に近ければ終端は `GetSystemTimePreciseAsFileTime`。変換済み FILETIME を QPC の終端で割ると、論理 CPU が 0% か 100% だけになる。ETW の値で全体 CPU を書き換えない。診断行に両方を出す。
+
+画面の診断行（CPU ページ）: 切替、状態、区間あたりのイベント数、欠測、集計時間、UI 更新時間、ETW 平均ビジー、全体 CPU、PULSE 自身の CPU とメモリ。`DEMO` が付く値は模擬であり、ETW の実測ではない。A は分析オフ、B は分析オンかつ全体表示、C は論理 CPU 表示で時刻を固定したとき。アイドル 0.5% 未満と 50 MB 以下は、この環境では測っていないので達成とは書かない。
+
+管理者としての再起動は `ShellExecuteW` の `runas` で、ボタンを押したときだけ。起動時には呼ばない。Linux では実行せず、エラーを返す。

@@ -212,7 +212,7 @@ fn present_detail_system(snapshot: &Snapshot, resource: ResourceId) -> DetailTex
                 logical_processor_text(snapshot.logical_processors),
                 interval_text(snapshot)
             ),
-            note: "全論理プロセッサの容量に対する使用率です。分母は GetSystemTimes のカーネル時間＋ユーザー時間（アイドルを含む総プロセッサ時間）、分子は同じ区間のビジー時間（カーネル−アイドル＋ユーザー）です。プロセス行の CPU は GetProcessTimes のカーネル＋ユーザー時間を同じ分母で割った値です。100% は全論理プロセッサが使用中という意味です。最初の 1 区間は差分がないため N/A です。論理プロセッサごとの内訳は未実装です。".to_string(),
+            note: "全論理プロセッサの容量に対する使用率です。分母は GetSystemTimes のカーネル時間＋ユーザー時間（アイドルを含む総プロセッサ時間）、分子は同じ区間のビジー時間（カーネル−アイドル＋ユーザー）です。プロセス行の CPU は GetProcessTimes のカーネル＋ユーザー時間を同じ分母で割った値です。100% は全論理プロセッサが使用中という意味です。最初の 1 区間は差分がないため N/A です。論理プロセッサごとの割合は、その CPU 上の時間を区間の長さで割った別の値です。".to_string(),
             show_graph: !matches!(snapshot.cpu_percent, MetricValue::Unsupported),
             graph_is_memory: false,
         },
@@ -644,6 +644,7 @@ mod tests {
                 gpus: Vec::new(),
             }],
             warning: None,
+            cpu_detail: crate::model::CpuDetailSnapshot::off(),
         }
     }
 

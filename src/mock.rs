@@ -5,13 +5,16 @@
 //! Numbers are scripted. They are not measurements.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 use crate::collector::SystemProbe;
 use crate::gpuagg::fold_engine_percents;
 use crate::metric::MetricValue;
 use crate::model::{
-    GpuAdapter, GpuPresence, NamedRate, ProcessGpu, ProcessNetMode, RawProcess, RawSample,
+    CpuDetailSnapshot, CpuDetailState, GpuAdapter, GpuPresence, LogicalCpuId, LogicalCpuProcess,
+    LogicalCpuSample, NamedRate, ProcessGpu, ProcessKey, ProcessNetMode, RawProcess, RawSample,
 };
 
 const STEP: Duration = Duration::from_millis(500);
@@ -26,6 +29,12 @@ pub enum Scenario {
     Special,
     /// Scripted 60-second story for history selection screenshots.
     History,
+    /// Eight logical processors with different rankings.
+    Cpus,
+    /// Thirty-two logical processors, for the grid layout.
+    Cpus32,
+    /// Detailed analysis is refused. Overall CPU still runs.
+    CpusDenied,
 }
 
 impl Scenario {
@@ -36,6 +45,9 @@ impl Scenario {
             "gaps" => Some(Self::Gaps),
             "special" => Some(Self::Special),
             "history" => Some(Self::History),
+            "cpus" => Some(Self::Cpus),
+            "cpus32" => Some(Self::Cpus32),
+            "cpus-denied" => Some(Self::CpusDenied),
             _ => None,
         }
     }
@@ -82,10 +94,17 @@ pub struct MockProbe {
     totals: HashMap<(u32, u64), Accumulators>,
     system_total: u64,
     system_busy: u64,
+    cpu_detail: Arc<AtomicBool>,
 }
 
 impl MockProbe {
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn new(scenario: Scenario) -> Self {
+        let on = matches!(scenario, Scenario::Cpus | Scenario::Cpus32);
+        Self::with_detail(scenario, Arc::new(AtomicBool::new(on)))
+    }
+
+    pub fn with_detail(scenario: Scenario, cpu_detail: Arc<AtomicBool>) -> Self {
         Self {
             scenario,
             origin: Instant::now(),
@@ -94,6 +113,7 @@ impl MockProbe {
             totals: HashMap::new(),
             system_total: 0,
             system_busy: 0,
+            cpu_detail,
         }
     }
 }
@@ -207,6 +227,15 @@ impl SystemProbe for MockProbe {
         }
 
         fill_devices(&mut sample, self.scenario, step);
+        if let Some(count) = cpu_count(self.scenario) {
+            sample.logical_processors = MetricValue::Value(u32::from(count));
+            sample.cpu_detail = script_cpus(
+                step,
+                count,
+                self.scenario == Scenario::CpusDenied,
+                self.cpu_detail.load(Ordering::SeqCst),
+            );
+        }
         sample
     }
 }
@@ -395,7 +424,108 @@ fn actors(scenario: Scenario) -> Vec<Actor> {
         Scenario::Gaps => gaps(),
         Scenario::Special => special(),
         Scenario::History => history_cast(),
+        Scenario::Cpus | Scenario::Cpus32 | Scenario::CpusDenied => crowd(24, false),
     }
+}
+
+fn cpu_count(scenario: Scenario) -> Option<u16> {
+    match scenario {
+        Scenario::Cpus | Scenario::CpusDenied => Some(8),
+        Scenario::Cpus32 => Some(32),
+        _ => None,
+    }
+}
+
+fn script_cpus(step: u64, count: u16, denied: bool, enabled: bool) -> CpuDetailSnapshot {
+    if !enabled {
+        return CpuDetailSnapshot::off();
+    }
+    if denied {
+        return CpuDetailSnapshot::needs_admin();
+    }
+    if step == 0 {
+        return CpuDetailSnapshot::unavailable(
+            "論理プロセッサの内訳は、最初の区間が確定するまで N/A です",
+        );
+    }
+    let mut processors = Vec::with_capacity(usize::from(count));
+    let mut busy = 0.0;
+    for number in 0..count {
+        let processes = script_rows(number, step);
+        let usage = processes
+            .iter()
+            .map(|row| row.percent)
+            .sum::<f64>()
+            .min(100.0);
+        busy += usage;
+        processors.push(LogicalCpuSample {
+            id: LogicalCpuId {
+                group: 0,
+                number: u8::try_from(number).unwrap_or(0),
+            },
+            usage_percent: MetricValue::Value(usage),
+            processes,
+        });
+    }
+    CpuDetailSnapshot {
+        state: CpuDetailState::Ready,
+        message: String::new(),
+        lost_events: 0,
+        events_in_interval: 800 + u64::from(count) * 20,
+        aggregate_nanos: 35_000,
+        mean_busy_percent: Some(busy / f64::from(count.max(1))),
+        processors,
+    }
+}
+
+fn script_rows(cpu: u16, step: u64) -> Vec<LogicalCpuProcess> {
+    let mut rows = Vec::new();
+    let push = |rows: &mut Vec<LogicalCpuProcess>, pid, create, name: &str, percent: f64| {
+        rows.push(LogicalCpuProcess {
+            key: ProcessKey {
+                pid,
+                creation_time_100ns: create,
+            },
+            name: name.to_string(),
+            cpu_time_100ns: ((percent / 100.0) * 5_000_000.0).round() as u64,
+            percent,
+        });
+    };
+    match cpu {
+        0 => {
+            push(&mut rows, 3100, 2, "mover.exe", 22.0);
+            push(&mut rows, 3000, 1, "resident.exe", 8.0);
+        }
+        1 if step < 40 => push(&mut rows, 4242, 100, "before.exe", 20.0),
+        1 => push(&mut rows, 4242, 900, "after.exe", 12.0),
+        // Wide enough that the 60-second bar nearest 30 seconds ago, and a
+        // few live samples after warmup, still land inside this story.
+        2 if (52..=68).contains(&step) => {
+            push(&mut rows, 3301, 8, "kept-cpu2.exe", 60.0);
+            push(&mut rows, 3300, 4, "gone-cpu.exe", 25.0);
+        }
+        2 if step < 52 => push(&mut rows, 3300, 4, "gone-cpu.exe", 30.0),
+        2 => push(&mut rows, 3302, 9, "steady-cpu2.exe", 8.0),
+        3 => {
+            push(&mut rows, 3100, 2, "mover.exe", 14.0);
+            push(&mut rows, 3003, 1, "side.exe", 6.0);
+        }
+        5 if (52..=68).contains(&step) => push(&mut rows, 3200, 3, "heavy-cpu5.exe", 72.0),
+        5 => push(&mut rows, 3201, 3, "background.exe", 5.0),
+        _ => {
+            let percent =
+                (3.0 + f64::from(cpu % 7) + 6.0 * ((step as f64) / 9.0 + f64::from(cpu)).sin())
+                    .clamp(1.0, 90.0);
+            push(
+                &mut rows,
+                4000 + u32::from(cpu),
+                1,
+                &format!("core{cpu}.exe"),
+                percent,
+            );
+        }
+    }
+    rows
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -697,5 +827,66 @@ mod tests {
         assert!(saw_peak);
         assert!(saw_both);
         let _ = previous;
+    }
+
+    #[test]
+    fn logical_cpu_story_is_deterministic() {
+        let mut probe = MockProbe::with_detail(
+            Scenario::Cpus,
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        );
+        for _ in 0..59 {
+            let _ = probe.probe();
+        }
+        let at_thirty = probe.probe();
+        let cpu5 = at_thirty
+            .cpu_detail
+            .processors
+            .iter()
+            .find(|cpu| cpu.id.number == 5)
+            .expect("cpu 5");
+        assert_eq!(cpu5.processes[0].name, "heavy-cpu5.exe");
+        assert!((cpu5.processes[0].percent - 72.0).abs() < 0.01);
+        let cpu0 = &at_thirty.cpu_detail.processors[0];
+        let cpu3 = &at_thirty.cpu_detail.processors[3];
+        assert_eq!(cpu0.processes[0].name, "mover.exe");
+        assert_eq!(cpu3.processes[0].name, "mover.exe");
+        assert_eq!(cpu0.processes[0].key, cpu3.processes[0].key);
+        assert!((cpu0.processes[0].percent - 22.0).abs() < 0.01);
+        assert!((cpu3.processes[0].percent - 14.0).abs() < 0.01);
+        let reused = at_thirty
+            .cpu_detail
+            .processors
+            .iter()
+            .find(|cpu| cpu.id.number == 1)
+            .expect("cpu 1");
+        assert_eq!(reused.processes[0].name, "after.exe");
+        assert_eq!(reused.processes[0].key.pid, 4242);
+        assert_eq!(reused.processes[0].key.creation_time_100ns, 900);
+
+        let mut denied = MockProbe::with_detail(
+            Scenario::CpusDenied,
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        );
+        let first = denied.probe();
+        let denied_sample = denied.probe();
+        assert_eq!(
+            denied_sample.cpu_detail.state,
+            crate::model::CpuDetailState::NeedsAdmin
+        );
+        assert!(denied_sample.cpu_detail.processors.is_empty());
+        assert!(matches!(
+            aggregate(Some(&first), &denied_sample).cpu_percent,
+            MetricValue::Value(_)
+        ));
+
+        let mut off = MockProbe::with_detail(
+            Scenario::Cpus,
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
+        assert_eq!(
+            off.probe().cpu_detail.state,
+            crate::model::CpuDetailState::Off
+        );
     }
 }

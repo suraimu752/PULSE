@@ -7,9 +7,10 @@ use std::sync::Arc;
 use slint::{ComponentHandle, Model, ModelRc, Timer, TimerMode, VecModel};
 
 use crate::config::{history_capacity, HISTORY_WINDOW, UI_REFRESH_INTERVAL};
-use crate::format::DisplayKind;
+use crate::format::{format_bytes, format_percent, DisplayKind};
 use crate::launch::LaunchOptions;
-use crate::model::{ResourceId, Snapshot};
+use crate::metric::MetricValue;
+use crate::model::{CpuDetailState, LogicalCpuId, ResourceId, Snapshot};
 use crate::pick::{
     axis_of, displayed, format_age, index_to_fraction, select_slot, slot_of_id, AxisSample,
     SelectionState,
@@ -17,7 +18,7 @@ use crate::pick::{
 use crate::present::{present_cards, present_detail_at, present_rows, status_line, PresentedRow};
 use crate::rank::{empty_rank_text, rank, rank_caption, RankStatus};
 use crate::sampler::{PublishedSample, SamplerHandle};
-use crate::series::{graph_points, scale_peak, scale_percent, ChartHistory};
+use crate::series::{graph_points, logical_cpu_series, scale_peak, scale_percent, ChartHistory};
 use crate::sort::SortColumn;
 
 slint::include_modules!();
@@ -26,6 +27,7 @@ struct RankCache {
     id: u64,
     resource: ResourceId,
     adapter: Option<u64>,
+    cpu: Option<(u16, u8)>,
     rows: Vec<TopRow>,
     caption: String,
     empty: String,
@@ -43,6 +45,12 @@ struct UiState {
     pending_slot: Option<i32>,
     /// Screenshot aid: a snapshot already evicted from the ring.
     pending_retained: Option<Arc<Snapshot>>,
+    cpu_logical: bool,
+    cpu_detail_on: bool,
+    selected_cpu: Option<LogicalCpuId>,
+    pending_cpu: Option<i32>,
+    cpu_series: Rc<VecModel<f32>>,
+    ui_nanos: u64,
     rows: Rc<VecModel<ProcessRow>>,
     top: Rc<VecModel<TopRow>>,
     detail_points: Rc<VecModel<f32>>,
@@ -92,6 +100,12 @@ pub fn run(options: LaunchOptions) -> Result<(), String> {
             options.select_history
         },
         pending_retained: retained,
+        cpu_logical: options.cpu_view_logical,
+        cpu_detail_on: options.cpu_detail_on.unwrap_or(false),
+        selected_cpu: None,
+        pending_cpu: options.select_cpu,
+        cpu_series: Rc::new(VecModel::from(Vec::<f32>::new())),
+        ui_nanos: 0,
         rows: Rc::new(VecModel::from(Vec::<ProcessRow>::new())),
         top: Rc::new(VecModel::from(Vec::<TopRow>::new())),
         detail_points: Rc::new(VecModel::from(Vec::<f32>::new())),
@@ -119,12 +133,25 @@ pub fn run(options: LaunchOptions) -> Result<(), String> {
         ui.set_gpu_decode_spark(ModelRc::from(state.gpu_decode_spark.clone()));
         ui.set_vram_spark(ModelRc::from(state.vram_spark.clone()));
         ui.set_shared_spark(ModelRc::from(state.shared_spark.clone()));
+        ui.set_cpu_series(ModelRc::from(state.cpu_series.clone()));
+        ui.set_cpu_slots(ModelRc::new(VecModel::from(
+            (0..i32::try_from(history_capacity()).unwrap_or(120)).collect::<Vec<_>>(),
+        )));
+        ui.set_cpu_stride(i32::try_from(history_capacity()).unwrap_or(120));
     }
 
     let latest = sampler.latest();
     wire_sort(&ui, &state, latest.clone());
     wire_resource(&ui, &state, latest.clone());
+    if options.cpu_detail_on == Some(true) {
+        sampler.set_cpu_detail(true);
+    } else if options.cpu_detail_on == Some(false) {
+        sampler.set_cpu_detail(false);
+    }
+    ui.set_cpu_view(if options.cpu_view_logical { 1 } else { 0 });
+    ui.set_cpu_detail_on(options.cpu_detail_on.unwrap_or(false));
     wire_history(&ui, &state, latest.clone());
+    wire_cpu(&ui, &state, latest.clone(), sampler.cpu_detail_flag());
     let prefs = Rc::new(RefCell::new(session_prefs(&options)?));
     apply_prefs(&ui, &prefs.borrow());
     if !prefs.borrow().resource_shown[state.borrow().resource as usize] {
@@ -411,6 +438,288 @@ fn wire_history(
     });
 }
 
+fn wire_cpu(
+    ui: &AppWindow,
+    state: &Rc<RefCell<UiState>>,
+    latest: crate::sampler::SharedLatest,
+    flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) {
+    let ui_weak = ui.as_weak();
+    let header_state = Rc::clone(state);
+    let header_latest = latest.clone();
+    ui.on_cpu_header(move |index| {
+        let Some(ui) = ui_weak.upgrade() else {
+            return;
+        };
+        select_cpu_index(&mut header_state.borrow_mut(), index);
+        if let Some(sample) = header_latest.load() {
+            apply(&ui, &header_state, &sample, true);
+        }
+    });
+
+    let ui_weak = ui.as_weak();
+    let bar_state = Rc::clone(state);
+    let bar_latest = latest.clone();
+    ui.on_cpu_bar(move |cpu, bar| {
+        let Some(ui) = ui_weak.upgrade() else {
+            return;
+        };
+        {
+            let mut state = bar_state.borrow_mut();
+            select_cpu_index(&mut state, cpu);
+            pin_slot(&mut state, bar);
+        }
+        if let Some(sample) = bar_latest.load() {
+            apply(&ui, &bar_state, &sample, true);
+        }
+    });
+
+    let ui_weak = ui.as_weak();
+    let view_state = Rc::clone(state);
+    let view_latest = latest.clone();
+    ui.on_cpu_view_set(move |view| {
+        let Some(ui) = ui_weak.upgrade() else {
+            return;
+        };
+        view_state.borrow_mut().cpu_logical = view == 1;
+        ui.set_cpu_view(if view == 1 { 1 } else { 0 });
+        if let Some(sample) = view_latest.load() {
+            apply(&ui, &view_state, &sample, true);
+        }
+    });
+
+    let ui_weak = ui.as_weak();
+    let toggle_state = Rc::clone(state);
+    let toggle_latest = latest;
+    let toggle_flag = flag;
+    ui.on_cpu_detail_toggle(move || {
+        let Some(ui) = ui_weak.upgrade() else {
+            return;
+        };
+        let on = !toggle_state.borrow().cpu_detail_on;
+        toggle_state.borrow_mut().cpu_detail_on = on;
+        toggle_flag.store(on, std::sync::atomic::Ordering::SeqCst);
+        ui.set_cpu_detail_on(on);
+        if let Some(sample) = toggle_latest.load() {
+            apply(&ui, &toggle_state, &sample, true);
+        }
+    });
+
+    ui.on_cpu_elevate(move || {
+        if let Err(err) = crate::platform::relaunch_elevated() {
+            eprintln!("管理者としての再起動: {err}");
+        }
+    });
+}
+
+fn select_cpu_index(state: &mut UiState, index: i32) {
+    let Some(index) = usize::try_from(index).ok() else {
+        return;
+    };
+    let id = state
+        .timeline
+        .iter()
+        .rev()
+        .flatten()
+        .find_map(|snapshot| snapshot.cpu_detail.processors.get(index).map(|cpu| cpu.id));
+    if let Some(id) = id {
+        state.selected_cpu = Some(id);
+        state.rank_cache = None;
+    }
+}
+
+fn paint_logical(ui: &AppWindow, state: &Rc<RefCell<UiState>>, sample: &PublishedSample) {
+    let (logical, resource, on) = {
+        let state = state.borrow();
+        (state.cpu_logical, state.resource, state.cpu_detail_on)
+    };
+    if resource != ResourceId::Cpu {
+        ui.set_cpu_diagnostics("".into());
+        ui.set_cpu_message("".into());
+        ui.set_cpu_admin(false);
+        ui.set_cpu_cards(ModelRc::new(VecModel::from(Vec::<CpuCard>::new())));
+        return;
+    }
+    let ui_nanos = state.borrow().ui_nanos;
+    ui.set_cpu_diagnostics(cpu_diagnostics(sample, ui_nanos, on).into());
+    if !logical {
+        ui.set_cpu_message("".into());
+        ui.set_cpu_admin(false);
+        ui.set_cpu_cards(ModelRc::new(VecModel::from(Vec::<CpuCard>::new())));
+        return;
+    }
+
+    let shown = {
+        let state = state.borrow();
+        state
+            .selection
+            .selected()
+            .cloned()
+            .unwrap_or_else(|| Arc::clone(&sample.snapshot))
+    };
+    let processors = &shown.cpu_detail.processors;
+    let pending = state.borrow().pending_cpu;
+    if let Some(pending) = pending {
+        if !processors.is_empty() {
+            select_cpu_index(&mut state.borrow_mut(), pending);
+            state.borrow_mut().pending_cpu = None;
+        }
+    }
+    let selected = state
+        .borrow()
+        .selected_cpu
+        .or_else(|| processors.first().map(|cpu| cpu.id));
+    if state.borrow().selected_cpu.is_none() {
+        if let Some(id) = selected {
+            state.borrow_mut().selected_cpu = Some(id);
+        }
+    }
+    let selected = state.borrow().selected_cpu;
+    let mut cards = Vec::with_capacity(processors.len());
+    for (index, cpu) in processors.iter().enumerate() {
+        let kind = match cpu.usage_percent {
+            MetricValue::Unavailable => DisplayKind::Unavailable,
+            MetricValue::Unsupported => DisplayKind::Unsupported,
+            MetricValue::Value(0.0) => DisplayKind::Zero,
+            MetricValue::Value(_) => DisplayKind::Value,
+        };
+        cards.push(CpuCard {
+            label: format!("CPU {index}").into(),
+            usage: format_percent(cpu.usage_percent).into(),
+            kind: kind.code(),
+            selected: selected == Some(cpu.id),
+        });
+    }
+    ui.set_cpu_cards(ModelRc::new(VecModel::from(cards)));
+    sync_cpu_series(state, sample, processors);
+
+    let detail = &shown.cpu_detail;
+    ui.set_cpu_admin(detail.state == CpuDetailState::NeedsAdmin);
+    match detail.state {
+        CpuDetailState::Ready => {
+            ui.set_cpu_message(
+                "この割合は、その論理プロセッサ上の時間を区間の長さで割った値です。全体 CPU とは分母が違います。"
+                    .into(),
+            );
+            ui.set_detail_note("アイドルは順位に入れません。".into());
+            if let Some(id) = selected {
+                if let Some((index, cpu)) =
+                    processors.iter().enumerate().find(|(_, cpu)| cpu.id == id)
+                {
+                    ui.set_detail_title(format!("CPU {index}").into());
+                    ui.set_detail_value(format_percent(cpu.usage_percent).into());
+                    ui.set_detail_kind(
+                        match cpu.usage_percent {
+                            MetricValue::Unavailable => DisplayKind::Unavailable,
+                            MetricValue::Unsupported => DisplayKind::Unsupported,
+                            MetricValue::Value(0.0) => DisplayKind::Zero,
+                            MetricValue::Value(_) => DisplayKind::Value,
+                        }
+                        .code(),
+                    );
+                    let ranked = crate::cpudetail::rank_logical_cpu(cpu, 5);
+                    let rows: Vec<TopRow> = ranked
+                        .iter()
+                        .enumerate()
+                        .map(|(rank, row)| TopRow {
+                            rank: (rank + 1).to_string().into(),
+                            name: row.name.as_str().into(),
+                            pid: row.key.pid.to_string().into(),
+                            value: format!("{:.1}%", row.percent).into(),
+                            kind: if row.percent == 0.0 {
+                                DisplayKind::Zero.code()
+                            } else {
+                                DisplayKind::Value.code()
+                            },
+                        })
+                        .collect();
+                    ui.set_rank_caption(
+                        format!("CPU {index} のプロセス（この CPU の時間 ÷ 区間）").into(),
+                    );
+                    ui.set_rank_empty(
+                        if rows.is_empty() {
+                            "実測値のあるプロセスはありません。"
+                        } else {
+                            ""
+                        }
+                        .into(),
+                    );
+                    sync_model(&state.borrow().top, rows);
+                }
+            }
+        }
+        CpuDetailState::Off => {
+            ui.set_detail_note("".into());
+            ui.set_cpu_message(
+                "詳細分析はオフです。全体 CPU とプロセス一覧は計測を続けます。".into(),
+            );
+            ui.set_rank_caption("論理 CPU のプロセス".into());
+            ui.set_rank_empty("N/A".into());
+            sync_model(&state.borrow().top, Vec::new());
+        }
+        CpuDetailState::NeedsAdmin => {
+            ui.set_detail_note("".into());
+            ui.set_cpu_message(detail.message.as_str().into());
+            ui.set_rank_caption("論理 CPU のプロセス".into());
+            ui.set_rank_empty("N/A".into());
+            sync_model(&state.borrow().top, Vec::new());
+        }
+        CpuDetailState::Unavailable => {
+            ui.set_detail_note("".into());
+            ui.set_cpu_message(detail.message.as_str().into());
+            ui.set_rank_caption("論理 CPU のプロセス".into());
+            ui.set_rank_empty("N/A".into());
+            sync_model(&state.borrow().top, Vec::new());
+        }
+    }
+}
+
+fn sync_cpu_series(
+    state: &Rc<RefCell<UiState>>,
+    sample: &PublishedSample,
+    processors: &[crate::model::LogicalCpuSample],
+) {
+    let stride = history_capacity();
+    let mut flat = Vec::with_capacity(processors.len().saturating_mul(stride));
+    for cpu in processors {
+        flat.extend(
+            scale_percent(&logical_cpu_series(
+                sample.timeline.iter().map(|slot| slot.as_deref()),
+                stride,
+                cpu.id,
+            ))
+            .points,
+        );
+    }
+    state.borrow().cpu_series.set_vec(flat);
+}
+
+fn cpu_diagnostics(sample: &PublishedSample, ui_nanos: u64, toggle_on: bool) -> String {
+    let detail = &sample.snapshot.cpu_detail;
+    let state = match detail.state {
+        CpuDetailState::Off => "オフ",
+        CpuDetailState::NeedsAdmin => "権限なし",
+        CpuDetailState::Unavailable => "未確定",
+        CpuDetailState::Ready => "計測中",
+    };
+    let etw = detail
+        .mean_busy_percent
+        .map(|value| format!("{value:.1}%"))
+        .unwrap_or_else(|| "N/A".to_string());
+    let prefix = if sample.demo { "DEMO 診断" } else { "診断" };
+    let toggle = if toggle_on { "オン" } else { "オフ" };
+    format!(
+        "{prefix}  切替 {toggle}  状態 {state}  イベント {}/区間  欠測 {}  集計 {} µs  UI {} µs  ETW平均 {etw}  全体 {}  PULSE {} / {}",
+        detail.events_in_interval,
+        detail.lost_events,
+        detail.aggregate_nanos / 1_000,
+        ui_nanos / 1_000,
+        format_percent(sample.snapshot.cpu_percent),
+        format_percent(sample.self_cpu),
+        format_bytes(sample.self_memory),
+    )
+}
+
 fn wire_resource(
     ui: &AppWindow,
     state: &Rc<RefCell<UiState>>,
@@ -430,6 +739,7 @@ fn wire_resource(
 }
 
 fn apply(ui: &AppWindow, state: &Rc<RefCell<UiState>>, sample: &PublishedSample, force: bool) {
+    let started = std::time::Instant::now();
     let (column, descending, resource, rows_model) = {
         let mut state = state.borrow_mut();
         if !force && state.last_sequence == Some(sample.snapshot.sequence) {
@@ -504,6 +814,7 @@ fn apply(ui: &AppWindow, state: &Rc<RefCell<UiState>>, sample: &PublishedSample,
     ui.set_vram_kind(cards.vram_dedicated.kind.code());
     ui.set_shared_summary(cards.vram_shared.text.into());
     ui.set_shared_kind(cards.vram_shared.kind.code());
+    state.borrow_mut().ui_nanos = u64::try_from(started.elapsed().as_nanos()).unwrap_or(0);
 }
 
 fn paint_history(
@@ -540,7 +851,10 @@ fn paint_history(
             .map(|selected| selected.sequence)
             .unwrap_or(sample.snapshot.sequence);
         let cache_hit = state.rank_cache.as_ref().is_some_and(|cache| {
-            cache.id == key && cache.resource == resource && cache.adapter == adapter
+            cache.cpu.is_none()
+                && cache.id == key
+                && cache.resource == resource
+                && cache.adapter == adapter
         });
         if !cache_hit {
             let view = displayed(
@@ -565,6 +879,7 @@ fn paint_history(
                 id: key,
                 resource,
                 adapter,
+                cpu: None,
                 rows,
                 caption: rank_caption(resource, adapter.is_some()).to_string(),
                 empty: empty_rank_text(&status).unwrap_or("").to_string(),
@@ -621,6 +936,7 @@ fn paint_history(
     ui.set_graph_axis_low(scaled.axis_low.into());
     sync_model(&state.borrow().detail_points, scaled.points);
     publish_gpu_choices(ui, sample, adapter);
+    paint_logical(ui, state, sample);
 }
 
 fn publish_gpu_choices(ui: &AppWindow, sample: &PublishedSample, adapter: Option<u64>) {

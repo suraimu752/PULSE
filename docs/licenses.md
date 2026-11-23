@@ -14,7 +14,7 @@ Copyright (C) 2026 PULSE contributors
 | --- | --- | --- | --- |
 | slint | 1.19.0 | `GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0` | **GPL-3.0-only** |
 | slint-build | 1.19.0（ビルド時のみ） | 上と同じ | **GPL-3.0-only** |
-| windows | 0.62.2 | `MIT OR Apache-2.0` | どちらも GPL-3.0 と組み合わせられる |
+| windows | 0.62.2 | `MIT OR Apache-2.0` | どちらも GPL-3.0 と組み合わせられる。論理 CPU 用に `Win32_System_Diagnostics_Etw`、`Win32_System_Time`、`Win32_UI_Shell` を有効にした。新しいクレートは足していない |
 
 Slint のロイヤリティフリーライセンス（デスクトップ向け、AboutSlint などの帰属が条件）と商用ライセンスは使いません。GPL-3.0-only を選ぶことで、PULSE 全体を GPL-3.0-only のまま配布できます。Slint 自身の説明でも、オープンソースのアプリは GPLv3 を使う、とされています。
 

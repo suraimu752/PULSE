@@ -1,6 +1,8 @@
 //! English PDH counters. Paths stay in English so a Japanese Windows install
 //! resolves the same names. The first collect often has no data; that is not a zero.
 
+use std::cell::Cell;
+
 use windows::Win32::System::Performance::{
     PdhAddEnglishCounterW, PdhCloseQuery, PdhCollectQueryData, PdhGetFormattedCounterArrayW,
     PdhGetFormattedCounterValue, PdhOpenQueryW, PDH_CSTATUS_NEW_DATA, PDH_CSTATUS_VALID_DATA,
@@ -18,6 +20,7 @@ pub enum PdhSample {
 pub struct PdhQuery {
     query: PDH_HQUERY,
     counter: PDH_HCOUNTER,
+    last_status: Cell<u32>,
 }
 
 // The sampler moves each enricher onto one worker thread and never shares the
@@ -28,24 +31,33 @@ pub struct PdhQuery {
 unsafe impl Send for PdhQuery {}
 
 impl PdhQuery {
-    pub fn open(path: &str) -> Option<Self> {
+    pub fn open(path: &str) -> Result<Self, u32> {
         unsafe {
             let mut query = PDH_HQUERY::default();
-            if PdhOpenQueryW(windows::core::PCWSTR::null(), 0, &mut query) != 0 {
-                return None;
+            let status = PdhOpenQueryW(windows::core::PCWSTR::null(), 0, &mut query);
+            if status != 0 {
+                return Err(status);
             }
             let mut wide: Vec<u16> = path.encode_utf16().collect();
             wide.push(0);
             let mut counter = PDH_HCOUNTER::default();
-            if PdhAddEnglishCounterW(query, windows::core::PCWSTR(wide.as_ptr()), 0, &mut counter)
-                != 0
-            {
+            let status =
+                PdhAddEnglishCounterW(query, windows::core::PCWSTR(wide.as_ptr()), 0, &mut counter);
+            if status != 0 {
                 let _ = PdhCloseQuery(query);
-                return None;
+                return Err(status);
             }
             let _ = PdhCollectQueryData(query);
-            Some(Self { query, counter })
+            Ok(Self {
+                query,
+                counter,
+                last_status: Cell::new(0),
+            })
         }
+    }
+
+    pub fn status(&self) -> u32 {
+        self.last_status.get()
     }
 
     pub fn collect(&self) -> Option<PdhSample> {
@@ -55,8 +67,15 @@ impl PdhQuery {
                 return Some(PdhSample::NoData);
             }
             if status != 0 && status != PDH_CSTATUS_NEW_DATA && status != PDH_CSTATUS_VALID_DATA {
+                self.last_status.set(status);
                 return None;
             }
+            self.read_array()
+        }
+    }
+
+    fn read_array(&self) -> Option<PdhSample> {
+        unsafe {
             let mut size = 0u32;
             let mut count = 0u32;
             let probe = PdhGetFormattedCounterArrayW(
@@ -72,40 +91,53 @@ impl PdhQuery {
             if probe != 0 && probe != PDH_MORE_DATA {
                 return self.collect_single();
             }
-            if count == 0 || size == 0 {
+            // The size probe often leaves `count` at 0 while `size` is the
+            // byte count. Treating that as an empty array made every card N/A.
+            if size == 0 {
                 return Some(PdhSample::Ready(Vec::new()));
             }
             let item_size = std::mem::size_of::<PDH_FMT_COUNTERVALUE_ITEM_W>();
-            let mut items =
-                vec![PDH_FMT_COUNTERVALUE_ITEM_W::default(); (size as usize).div_ceil(item_size)];
-            if items.is_empty() {
-                return Some(PdhSample::Ready(Vec::new()));
-            }
-            size = (items.len() * item_size) as u32;
-            let status = PdhGetFormattedCounterArrayW(
-                self.counter,
-                PDH_FMT_DOUBLE,
-                &mut size,
-                &mut count,
-                Some(items.as_mut_ptr()),
-            );
-            if status == PDH_NO_DATA {
-                return Some(PdhSample::NoData);
-            }
-            if status != 0 {
-                return None;
-            }
-            let mut values = Vec::new();
-            for item in items.iter().take(count as usize) {
-                if !status_ok(item.FmtValue.CStatus) {
+            for _ in 0..4 {
+                if size > 8 * 1024 * 1024 {
+                    self.last_status.set(PDH_MORE_DATA);
+                    return None;
+                }
+                let mut items = vec![
+                    PDH_FMT_COUNTERVALUE_ITEM_W::default();
+                    (size as usize).div_ceil(item_size).max(1)
+                ];
+                size = (items.len() * item_size) as u32;
+                let status = PdhGetFormattedCounterArrayW(
+                    self.counter,
+                    PDH_FMT_DOUBLE,
+                    &mut size,
+                    &mut count,
+                    Some(items.as_mut_ptr()),
+                );
+                if status == PDH_MORE_DATA {
                     continue;
                 }
-                let number = item.FmtValue.Anonymous.doubleValue;
-                if number.is_finite() && number >= 0.0 {
-                    values.push((wide_string(item.szName), number));
+                if status == PDH_NO_DATA {
+                    return Some(PdhSample::NoData);
                 }
+                if status != 0 {
+                    self.last_status.set(status);
+                    return None;
+                }
+                let mut values = Vec::new();
+                for item in items.iter().take(count as usize) {
+                    if !status_ok(item.FmtValue.CStatus) {
+                        continue;
+                    }
+                    let number = item.FmtValue.Anonymous.doubleValue;
+                    if number.is_finite() && number >= 0.0 {
+                        values.push((wide_string(item.szName), number));
+                    }
+                }
+                return Some(PdhSample::Ready(values));
             }
-            Some(PdhSample::Ready(values))
+            self.last_status.set(PDH_MORE_DATA);
+            None
         }
     }
 
@@ -118,6 +150,7 @@ impl PdhQuery {
                 return Some(PdhSample::NoData);
             }
             if status != 0 || !status_ok(value.CStatus) {
+                self.last_status.set(status);
                 return None;
             }
             let number = value.Anonymous.doubleValue;
