@@ -32,6 +32,8 @@ pub struct UiPrefs {
     pub resource_order: Vec<i32>,
     pub resource_shown: Vec<bool>,
     pub resource_width: f32,
+    /// Left navigation. Missing `nav=` in an older file stays collapsed.
+    pub nav_expanded: bool,
 }
 
 impl Default for UiPrefs {
@@ -42,6 +44,7 @@ impl Default for UiPrefs {
             resource_order: (0..RESOURCE_COUNT as i32).collect(),
             resource_shown: vec![true; RESOURCE_COUNT],
             resource_width: 220.0,
+            nav_expanded: false,
         }
     }
 }
@@ -178,8 +181,13 @@ impl UiPrefs {
             .collect::<Vec<_>>()
             .join(",");
         format!(
-            "columns={columns}\nhidden={hidden}\nresources={resources}\nresource-hidden={resource_hidden}\nsplit={}\n",
-            self.resource_width
+            "columns={columns}\nhidden={hidden}\nresources={resources}\nresource-hidden={resource_hidden}\nsplit={}\nnav={}\n",
+            self.resource_width,
+            if self.nav_expanded {
+                "expanded"
+            } else {
+                "collapsed"
+            }
         )
     }
 
@@ -227,6 +235,10 @@ impl UiPrefs {
                             prefs.resource_width = width;
                         }
                     }
+                }
+                // Absent on purpose: older files have no `nav=` and stay collapsed.
+                "nav" => {
+                    prefs.nav_expanded = matches!(value.trim(), "expanded" | "1" | "true");
                 }
                 _ => {}
             }
@@ -499,7 +511,27 @@ mod tests {
         prefs.move_column(3, -1);
         prefs.toggle_resource(4, 0);
         prefs.resource_width = 240.0;
+        prefs.nav_expanded = true;
         let parsed = UiPrefs::parse(&prefs.to_file());
         assert_eq!(parsed, prefs);
+    }
+
+    #[test]
+    fn nav_stays_collapsed_when_the_file_does_not_say() {
+        assert!(!UiPrefs::default().nav_expanded);
+        let old = UiPrefs::parse("columns=name,pid\nsplit=220\n");
+        assert!(!old.nav_expanded);
+        assert!(!UiPrefs::parse("nav=collapsed\n").nav_expanded);
+        assert!(UiPrefs::parse("nav=expanded\n").nav_expanded);
+        let open = UiPrefs {
+            nav_expanded: true,
+            ..UiPrefs::default()
+        };
+        assert!(UiPrefs::parse(&open.to_file()).nav_expanded);
+        let shut = UiPrefs {
+            nav_expanded: false,
+            ..open
+        };
+        assert!(!UiPrefs::parse(&shut.to_file()).nav_expanded);
     }
 }

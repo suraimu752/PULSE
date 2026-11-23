@@ -79,9 +79,10 @@ pub fn run(options: LaunchOptions) -> Result<(), String> {
     if let Some(theme) = options.theme {
         ui.global::<Theme>().set_preference(theme);
     }
-    if let Some((width, height)) = options.size {
-        ui.window().set_size(slint::LogicalSize::new(width, height));
-    }
+    // Preferred size in ui/app.slint. Not written to ui.cfg, so every launch
+    // without --size opens here, including the first one.
+    let (width, height) = options.size.unwrap_or((1080.0, 720.0));
+    ui.window().set_size(slint::LogicalSize::new(width, height));
     // System mode follows AppsUseLightTheme. Missing key stays light.
     ui.global::<Theme>()
         .set_system_light(crate::platform::apps_use_light_theme().unwrap_or(true));
@@ -166,6 +167,7 @@ pub fn run(options: LaunchOptions) -> Result<(), String> {
         state.borrow_mut().resource = ResourceId::from_index(next);
         ui.set_resource(next);
     }
+    wire_nav(&ui, &prefs);
     wire_layout(&ui, &state, latest.clone(), &prefs);
     if options.menu.as_deref() == Some("columns") {
         ui.set_page(0);
@@ -265,6 +267,7 @@ fn apply_prefs(ui: &AppWindow, prefs: &crate::uiprefs::UiPrefs) {
     ui.set_resource_order(ModelRc::new(VecModel::from(prefs.resource_order.clone())));
     ui.set_resource_shown(ModelRc::new(VecModel::from(prefs.resource_shown.clone())));
     ui.set_resource_pref(prefs.resource_width);
+    ui.set_nav_expanded(prefs.nav_expanded);
 }
 
 fn column_widths(ui: &AppWindow) -> Vec<f32> {
@@ -282,6 +285,14 @@ fn column_widths(ui: &AppWindow) -> Vec<f32> {
         columns.get_vram(),
         columns.get_shared(),
     ]
+}
+
+fn wire_nav(ui: &AppWindow, prefs: &Rc<RefCell<crate::uiprefs::UiPrefs>>) {
+    let prefs = Rc::clone(prefs);
+    ui.on_nav_changed(move |expanded| {
+        prefs.borrow_mut().nav_expanded = expanded;
+        crate::uiprefs::save(&prefs.borrow());
+    });
 }
 
 fn wire_layout(
@@ -1368,9 +1379,74 @@ mod layout_tests {
     }
 
     #[test]
-    fn performance_page_fits_light_and_dark_at_three_sizes() {
+    fn the_nav_starts_collapsed() {
+        backend();
+        let ui = AppWindow::new().expect("window");
+        assert!(!ui.get_nav_expanded());
+    }
+
+    #[test]
+    fn analysis_switch_sits_at_the_right_of_the_cpu_segments() {
+        let ui = open_performance(1080.0, 720.0, false);
+        let logical = ElementHandle::find_by_accessible_label(&ui, "論理プロセッサ別表示")
+            .next()
+            .expect("logical segment");
+        let switch = ElementHandle::find_by_accessible_label(&ui, "分析")
+            .next()
+            .expect("analysis switch");
+        assert!(
+            ElementHandle::find_by_accessible_label(&ui, "詳細なCPU分析")
+                .next()
+                .is_none()
+        );
+        assert_eq!(
+            switch.accessible_role(),
+            Some(i_slint_backend_testing::AccessibleRole::Switch)
+        );
+        assert_eq!(switch.accessible_checked(), Some(false));
+        let weak = ui.as_weak();
+        ui.on_cpu_detail_toggle(move || {
+            let Some(ui) = weak.upgrade() else {
+                return;
+            };
+            ui.set_cpu_detail_on(!ui.get_cpu_detail_on());
+        });
+        switch.mock_single_click(slint::platform::PointerEventButton::Left);
+        assert!(ui.get_cpu_detail_on());
+        assert_eq!(switch.accessible_checked(), Some(true));
+        switch.invoke_accessible_default_action();
+        assert!(!ui.get_cpu_detail_on());
+        let logical_at = logical.absolute_position();
+        let switch_at = switch.absolute_position();
+        let switch_size = switch.size();
+        assert!(
+            switch_size.width < 64.0 && switch_size.width > 36.0,
+            "switch width {} should stay a pill, not a stretched segment",
+            switch_size.width
+        );
+        assert!(switch_at.x >= logical_at.x + logical.size().width - 1.0);
+        assert!((switch_at.y - logical_at.y).abs() < 8.0);
+        let detail = element(&ui, "detail-column");
+        let detail_right = detail.absolute_position().x + detail.size().width;
+        let switch_right = switch_at.x + switch_size.width;
+        assert!(switch_right <= detail_right + 1.0);
+        assert!(
+            detail_right - switch_right < 28.0,
+            "switch should sit on the right edge, gap was {}",
+            detail_right - switch_right
+        );
+        let _ = ui.hide();
+    }
+
+    #[test]
+    fn performance_page_fits_light_and_dark_at_the_checked_sizes() {
         for dark in [false, true] {
-            for (width, height) in [(1280.0, 720.0), (1920.0, 1080.0), (800.0, 600.0)] {
+            for (width, height) in [
+                (1080.0, 720.0),
+                (1280.0, 720.0),
+                (1920.0, 1080.0),
+                (800.0, 600.0),
+            ] {
                 let ui = open_performance(width, height, dark);
                 assert_eq!(ui.global::<Theme>().get_dark(), dark);
                 assert_performance_fits(&ui, width, height);

@@ -965,9 +965,70 @@ export struct CpuCard {
     selected: bool,
 }
 
+// Pill and knob. The track takes the needle color only while analysis is on.
+// The knob stays the color that still reads on that track.
+component AnalysisSwitch inherits FocusScope {
+    in property <bool> on;
+    callback toggled();
+    horizontal-stretch: 0;
+    width: 48px;
+    height: 28px;
+    accessible-role: switch;
+    accessible-label: "分析";
+    accessible-checked: on;
+    accessible-action-default => { root.toggled(); }
+
+    key-pressed(event) => {
+        if (event.text == Key.Space) {
+            root.toggled();
+            accept
+        } else {
+            reject
+        }
+    }
+
+    Rectangle {
+        width: 100%;
+        height: 100%;
+        border-radius: 14px;
+        border-width: root.has-focus ? 2px : 0px;
+        border-color: Theme.text;
+        background: transparent;
+    }
+
+    track := Rectangle {
+        x: 2px;
+        y: (parent.height - self.height) / 2;
+        width: parent.width - 4px;
+        height: 26px;
+        border-radius: 13px;
+        background: root.on ? Theme.accent : Theme.grip;
+
+        Rectangle {
+            x: root.on ? parent.width - self.width - 3px : 3px;
+            y: (parent.height - self.height) / 2;
+            width: 20px;
+            height: 20px;
+            border-radius: 10px;
+            background: root.on && Theme.dark ? #0e1613 : #fffcf8;
+            animate x { duration: 160ms; easing: cubic-bezier(0.23, 1, 0.32, 1); }
+        }
+    }
+
+    TouchArea {
+        width: 100%;
+        height: 100%;
+        accessible-role: none;
+        clicked => {
+            root.focus();
+            root.toggled();
+        }
+    }
+}
+
 export component AppWindow inherits Window {
     title: "PULSE";
-    preferred-width: 1280px;
+    preferred-width: 1080px;
     preferred-height: 720px;
     min-width: 800px;
     min-height: 560px;
@@ -976,7 +1037,7 @@ export component AppWindow inherits Window {
     default-font-size: 13px;
 
     in-out property <int> page: 0;
-    in-out property <bool> nav-expanded: true;
+    in-out property <bool> nav-expanded: false;
     in-out property <int> resource: 0;
     in-out property <string> sort-column: "cpu";
     in-out property <bool> sort-desc: true;
@@ -1039,6 +1100,7 @@ export component AppWindow inherits Window {
     callback cpu-view-set(int);
     callback cpu-detail-toggle();
     callback cpu-elevate();
+    callback nav-changed(bool);
     in-out property <[float]> cpu-series;
     in-out property <[int]> cpu-slots;
     in property <int> cpu-stride: 120;
@@ -1147,7 +1209,10 @@ export component AppWindow inherits Window {
                     height: 36px;
                     accessible-role: button;
                     accessible-label: root.nav-expanded ? "ナビゲーションを折りたたむ" : "ナビゲーションを広げる";
-                    clicked => { root.nav-expanded = !root.nav-expanded; }
+                    clicked => {
+                        root.nav-expanded = !root.nav-expanded;
+                        root.nav-changed(root.nav-expanded);
+                    }
                     SideGlyph {
                         glyph: 0;
                         x: root.nav-expanded ? 18px : (parent.width - self.width) / 2;
@@ -1704,29 +1769,9 @@ export component AppWindow inherits Window {
                                                     }
                                                 }
                                             }
-                                            cpu-switch := TouchArea {
-                                                horizontal-stretch: 1;
-                                                accessible-role: button;
-                                                accessible-label: "詳細なCPU分析";
-                                                clicked => { root.cpu-detail-toggle(); }
-                                                Rectangle {
-                                                    width: 100%;
-                                                    height: 100%;
-                                                    border-radius: 6px;
-                                                    border-width: 1px;
-                                                    border-color: root.cpu-detail-on ? Theme.accent : Theme.line;
-                                                    background: root.cpu-detail-on ? Theme.nav-selected : Theme.chip;
-                                                    Text {
-                                                        width: 100%;
-                                                        height: 100%;
-                                                        text: root.cpu-detail-on ? "分析オン" : "分析オフ";
-                                                        font-size: 12px;
-                                                        font-weight: 600;
-                                                        color: root.cpu-detail-on ? Theme.accent-text : Theme.text-secondary;
-                                                        horizontal-alignment: center;
-                                                        vertical-alignment: center;
-                                                    }
-                                                }
+                                            analysis-switch := AnalysisSwitch {
+                                                on: root.cpu-detail-on;
+                                                toggled => { root.cpu-detail-toggle(); }
                                             }
                                         }
                                         if root.resource == 0 && root.cpu-diagnostics != "": Text {
