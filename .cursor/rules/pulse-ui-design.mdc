@@ -1,0 +1,17 @@
+---
+description: PULSE の UI 意匠は vendored の anything-frontend-art-direction に従う
+globs:
+  - ui/**
+  - src/ui.rs
+  - src/present.rs
+alwaysApply: true
+---
+
+PULSE の画面の色、文字、余白、罫、構図を変えるときは、先に `.cursor/skills/anything-frontend-art-direction/SKILL.md` と、判断に必要な `references/` と `checklists/` を読む。
+
+- 誰が、何を見て、どう判断できたら成功かを先に書く。情報の理由と、文字・地・線の理由を分ける。
+- 題材は軽量なシステムモニタ。主役はいまの計測値と、それを説明するグラフやプロセスである。Web の手順は Slint のデスクトップへ読み替える。CSS の検査手順は使わない。
+- すでに評価した配置を、色だけを変える口実で動かさない。配置を変えるなら、同じ内容で二案を実画面で比べ、採用理由を `docs/decisions.md` に残す。
+- `N/A`（計測不能）、`未対応`（未実装）、実測の `0` は、文言でも色でも混ぜない。ダミーの計測値を出さない。UI から Windows API を呼ばない。
+- 最小の確認幅は 800×600。コントラストは本文で 4.5:1 以上。フォーカスが見えること。小さい数値を装飾書体で潰さない。
+- スキルの `LICENSE` と `NOTICE.md` は改変しない。実行ファイルにこのスキルをリンクしない。

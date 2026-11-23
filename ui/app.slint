@@ -1,47 +1,48 @@
 import { ListView } from "std-widgets.slint";
 
-// Surfaces are layered (sidebar, canvas, card), not inverted. Accent is for
-// selection, the active sort, and measured values only.
+// Instrument surfaces: the sidebar sits behind the work, the card holds the
+// reading, and one meter green is the needle (selection, sort, graph, hero).
+// N/A stays amber and 未対応 stays gray so neither looks like a measured zero.
 export global Theme {
     // 0 light, 1 dark, 2 follow AppsUseLightTheme.
     in-out property <int> preference: 2;
     in-out property <bool> system-light: true;
     out property <bool> dark: preference == 1 ? true : preference == 0 ? false : !system-light;
 
-    out property <color> canvas: dark ? #1e1e1e : #f3f3f3;
-    out property <color> sidebar: dark ? #181818 : #f7f7f7;
-    out property <color> card: dark ? #2a2a2a : #ffffff;
-    out property <color> header: dark ? #333333 : #f6f6f6;
-    out property <color> header-hover: dark ? #3d3d3d : #ececec;
-    out property <color> row: dark ? #2a2a2a : #ffffff;
-    out property <color> row-alt: dark ? #242424 : #f3f6f9;
-    out property <color> line: dark ? #454545 : #e1e1e1;
-    out property <color> text: dark ? #f3f3f3 : #1a1a1a;
-    out property <color> text-secondary: dark ? #d4d4d4 : #3a3a3a;
-    out property <color> text-muted: dark ? #b8b8b8 : #4f4f4f;
-    out property <color> accent: dark ? #6cbcf5 : #0f6cbd;
-    out property <color> accent-text: dark ? #9ed4ff : #0c4f8c;
-    out property <color> nav-selected: dark ? #12344d : #e5f1fb;
-    out property <color> nav-hover: dark ? #2c2c2c : #ededed;
-    out property <color> nav-pressed: dark ? #3a3a3a : #e2e2e2;
-    out property <color> card-hover: dark ? #323232 : #f5f5f5;
-    out property <color> card-pressed: dark ? #3a3a3a : #e8e8e8;
-    out property <color> unavailable: dark ? #f0c36a : #8a4e00;
-    out property <color> unsupported: dark ? #b0b0b0 : #5a5a5a;
+    out property <color> canvas: dark ? #141a17 : #f6f4ef;
+    out property <color> sidebar: dark ? #0e1311 : #ebe7df;
+    out property <color> card: dark ? #1c2622 : #fffcf8;
+    out property <color> header: dark ? #24302b : #f3f0e8;
+    out property <color> header-hover: dark ? #2c3b34 : #e7e2d6;
+    out property <color> row: dark ? #1c2622 : #fffcf8;
+    out property <color> row-alt: dark ? #18211e : #f4f1ea;
+    out property <color> line: dark ? #314038 : #e4ddd0;
+    out property <color> text: dark ? #e8f2ec : #1c1914;
+    out property <color> text-secondary: dark ? #c5d5cc : #3a342c;
+    out property <color> text-muted: dark ? #a8bdb2 : #5c5348;
+    out property <color> accent: dark ? #8fd9c4 : #0c6b52;
+    out property <color> accent-text: dark ? #c8f6e8 : #084838;
+    out property <color> nav-selected: dark ? #14352c : #dceee6;
+    out property <color> nav-hover: dark ? #1a2420 : #e3ddd2;
+    out property <color> nav-pressed: dark ? #24342e : #d8d1c4;
+    out property <color> card-hover: dark ? #24342e : #f7f4ee;
+    out property <color> card-pressed: dark ? #2c3f37 : #efeae1;
+    out property <color> unavailable: dark ? #f0c36a : #8a4b00;
+    out property <color> unsupported: dark ? #a8b3ae : #5c564e;
     out property <color> warn-bg: dark ? #3a3116 : #fff4ce;
-    out property <color> warn-border: dark ? #8d7340 : #e6c200;
+    out property <color> warn-border: dark ? #8d7340 : #e0b84a;
     out property <color> warn-text: dark ? #f6e7c1 : #5c4a00;
-    out property <color> graph-bg: dark ? #1a242e : #f3f7fb;
-    out property <color> graph-plot: dark ? #12181f : #ffffff;
-    out property <color> graph-border: dark ? #314556 : #d5e3f0;
-    out property <color> graph-bar: dark ? #4aa3e0 : #0f6cbd;
-    // Dark track sits clearly above the card so the gutter reads when the thumb is hidden.
-    out property <color> scroll-track: dark ? #404040 : #e4e4e4;
-    out property <color> scroll-thumb: dark ? #c0c0c0 : #5c5c5c;
-    out property <color> scroll-thumb-hover: dark ? #d4d4d4 : #3f3f3f;
-    out property <color> scroll-thumb-pressed: dark ? #e4e4e4 : #2a2a2a;
-    out property <color> grip: dark ? #6a6a6a : #c4c4c4;
-    out property <color> chip: dark ? #2e2e2e : #ffffff;
+    out property <color> graph-bg: dark ? #10211b : #e7f3ee;
+    out property <color> graph-plot: dark ? #0e1613 : #fffcf8;
+    out property <color> graph-border: dark ? #2a4a40 : #c9ddd4;
+    out property <color> graph-bar: dark ? #8fd9c4 : #0c6b52;
+    // The track stays visible against the card when the thumb is hidden.
+    out property <color> scroll-track: dark ? #2a3530 : #e6e1d6;
+    out property <color> scroll-thumb: dark ? #b7c4bc : #6e675c;
+    out property <color> scroll-thumb-hover: dark ? #d5e0da : #4e483f;
+    out property <color> scroll-thumb-pressed: dark ? #eef5f1 : #2e2a24;
+    out property <color> grip: dark ? #4a5c54 : #c9c2b4;
+    out property <color> chip: dark ? #1c2622 : #fffcf8;
 }
 
 export enum CellKind { value, zero, unavailable, unsupported }
@@ -1590,7 +1591,7 @@ export component AppWindow inherits Window {
                                         detail-value := Text {
                                             text: root.detail-value;
                                             font-size: 28px;
-                                            font-weight: 600;
+                                            font-weight: 700;
                                             color: root.detail-kind == 3 ? Theme.unsupported : root.detail-kind == 2 ? Theme.unavailable : Theme.accent;
                                             wrap: word-wrap;
                                         }

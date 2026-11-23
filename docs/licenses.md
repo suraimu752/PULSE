@@ -35,8 +35,13 @@ UI の設計メモとして、次のスキル一式を `.cursor/skills/` に同�
 | impeccable | https://github.com/pbakaus/impeccable （`.cursor/skills/impeccable/`） | `b49177d32788f2dc585c42831d845dacf1ebed2c` | Apache-2.0（`LICENSE` と `NOTICE.md`） |
 | taste-skill | https://github.com/Leonxlnx/taste-skill （`skills/taste-skill/`） | `f6b76575f949707b4e3c37cd86cb44b0b98643e8` | MIT |
 | emil-design-eng | https://github.com/emilkowalski/skills （`skills/emil-design-eng/`） | `64eb3deb9a5fbfa041faf783e0bc3fd635872e9c` | MIT |
+| anything-frontend-art-direction | https://github.com/RNA4219/anything-frontend-art-direction | `f5df625dbc577d6a3ca28e13ef09e39b135b4a6f` | MIT（`LICENSE` と `NOTICE.md`） |
 
-Apache-2.0 と MIT は GPL-3.0 と組み合わせられる。taste-skill の上流フォルダには、その説明文が Wikimedia Commons / Unsplash の CC0・CC-BY・CC-BY-SA としている参考写真がある。画面にもスキルの文章にも使っていないため、画像ファイルは同梱していない。残しているのは `SKILL.md`、`LICENSE`、および写真以外の文章とスクリプトである。MIT の表示義務は同梱の `LICENSE` で満たす。ライセンス条件自体は変えていない。
+Apache-2.0 と MIT は GPL-3.0-only と組み合わせられる。いずれも実行ファイルにはリンクしない。同梱した `LICENSE` を残すことで表示義務を満たし、ライセンス条件自体は変えていない。
+
+taste-skill の上流フォルダには、その説明文が Wikimedia Commons / Unsplash の CC0・CC-BY・CC-BY-SA としている参考写真がある。画面にもスキルの文章にも使っていないため、画像ファイルは同梱していない。残しているのは `SKILL.md`、`LICENSE`、および写真以外の文章とスクリプトである。
+
+anything-frontend-art-direction は MIT で、PULSE の GPL-3.0-only と両立する。`LICENSE` と `NOTICE.md` はコミット `f5df625dbc577d6a3ca28e13ef09e39b135b4a6f` のままである。同梱していないのは `examples/`（OFL 1.1 の埋め込みフォントを含む見本サイト）、`docs/shiomachi-film.png`、`docs/dead-air-fm.webp`、`data/typography/catalog.sqlite3` である。フォントファイルは入れていない。詳細は `.cursor/skills/anything-frontend-art-direction/VENDORED.md`。`sources.md` が指す外部文書は、この MIT では再ライセンスされない。今後の UI 意匠はこのスキルに従う（`AGENTS.md`）。
 
 ## アイコン
 

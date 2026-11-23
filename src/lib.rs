@@ -63,3 +63,48 @@ pub fn run_with(options: LaunchOptions) -> Result<(), String> {
         Err("PULSE was built without the ui feature, so there is no window to open.".to_string())
     }
 }
+
+#[cfg(test)]
+mod windows_manifest {
+    #[test]
+    fn elevation_is_require_administrator_and_bins_only() {
+        let manifest = include_str!("../assets/windows/pulse.exe.manifest");
+        assert!(
+            manifest.contains("requireAdministrator"),
+            "the embedded manifest must request elevation"
+        );
+        assert!(
+            !manifest.contains("asInvoker"),
+            "the manifest must not fall back to asInvoker"
+        );
+        let build = include_str!("../build.rs");
+        assert!(
+            build.contains("requireAdministrator"),
+            "the MSVC link line must request the same level as the manifest"
+        );
+        assert!(
+            build.contains("rustc-link-arg-bin=PULSE"),
+            "MSVC elevation is attached to the PULSE bin"
+        );
+        assert!(
+            !build.contains("rustc-link-arg-bins"),
+            "the bins-wide form is broader than the named bin"
+        );
+        assert!(
+            !build.contains("cargo:rustc-link-arg="),
+            "cargo:rustc-link-arg would also stamp test binaries"
+        );
+        let wrap = include_str!("../assets/windows/link-wrap.sh");
+        assert!(
+            wrap.contains("PULSE.exe"),
+            "the GNU linker adds the manifest only for PULSE.exe"
+        );
+        let config = include_str!("../.cargo/config.toml");
+        assert!(config.contains("link-wrap.sh"));
+        let package = include_str!("../Cargo.toml");
+        assert!(
+            package.contains("test = false"),
+            "src/main.rs has no tests; CI runs --lib --tests so it does not launch the bin harness"
+        );
+    }
+}

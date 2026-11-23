@@ -1,0 +1,4 @@
+# GNU Windows builds (local cross checks) elevate only `PULSE.exe`.
+# The MSVC release, which CI uploads, is handled in `build.rs`.
+[target.x86_64-pc-windows-gnu]
+linker = "assets/windows/link-wrap.sh"

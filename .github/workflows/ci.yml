@@ -34,7 +34,9 @@ jobs:
       - name: cargo clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
       - name: cargo test
-        run: cargo test --all-targets --all-features
+        # `--lib --tests` skips the empty PULSE.exe unit-test harness. On Windows
+        # that harness would otherwise inherit the admin manifest (see build.rs).
+        run: cargo test --lib --tests --all-features
 
   windows:
     name: fmt / clippy / test / build (Windows)
@@ -49,7 +51,9 @@ jobs:
       - name: cargo clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
       - name: cargo test
-        run: cargo test --all-targets --all-features
+        # Do not run the PULSE-<hash> harness. MSVC attaches requireAdministrator
+        # to it as well as to PULSE.exe, and an elevated harness fails CI.
+        run: cargo test --lib --tests --all-features
       - name: cargo build (release)
         run: cargo build --release --locked
       - name: Show PULSE.exe

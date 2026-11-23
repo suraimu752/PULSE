@@ -61,6 +61,11 @@ path = "src/lib.rs"
 [[bin]]
 name = "PULSE"
 path = "src/main.rs"
+# There are no tests in main.rs. Elevation is applied by the linker wrapper
+# only when the output name is PULSE.exe, because a link-arg would also mark
+# the PULSE-<hash> harness and break `cargo test` on Windows.
+test = false
+bench = false
 
 [profile.release]
 strip = "symbols"
