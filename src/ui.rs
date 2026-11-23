@@ -770,11 +770,6 @@ fn apply(ui: &AppWindow, state: &Rc<RefCell<UiState>>, sample: &PublishedSample,
         sample.self_memory,
         &sample.updated_text,
     );
-    let line = if sample.demo {
-        format!("DEMO DATA    {line}")
-    } else {
-        line
-    };
     ui.set_demo(sample.demo);
     ui.set_status_text(line.into());
     match &sample.snapshot.warning {
@@ -1529,7 +1524,7 @@ mod layout_tests {
         let at = menu.absolute_position();
         let size = menu.size();
         assert!(
-            size.width >= 260.0 && size.height > 200.0,
+            size.width >= 180.0 && size.height > 200.0,
             "column menu is {} x {}",
             size.width,
             size.height
