@@ -5,6 +5,7 @@
 //! total because summing process shared memory double-counts.
 
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 use crate::collector::MetricEnricher;
 use crate::gpuagg::{
@@ -22,7 +23,8 @@ pub struct GpuEnricher {
     process_shared: Option<PdhQuery>,
     adapter_dedicated: Option<PdhQuery>,
     adapter_shared: Option<PdhQuery>,
-    opened: bool,
+    engine_error: u32,
+    since: Option<Instant>,
     saw_engine: bool,
     confirmed_empty: bool,
 }
@@ -35,22 +37,45 @@ impl GpuEnricher {
             process_shared: None,
             adapter_dedicated: None,
             adapter_shared: None,
-            opened: false,
+            engine_error: 0,
+            since: None,
             saw_engine: false,
             confirmed_empty: false,
         }
     }
 
-    fn open_once(&mut self) {
-        if self.opened {
-            return;
+    fn ensure_open(&mut self) {
+        if self.since.is_none() {
+            self.since = Some(Instant::now());
         }
-        self.engines = PdhQuery::open(r"\GPU Engine(*)\Utilization Percentage");
-        self.process_dedicated = PdhQuery::open(r"\GPU Process Memory(*)\Dedicated Usage");
-        self.process_shared = PdhQuery::open(r"\GPU Process Memory(*)\Shared Usage");
-        self.adapter_dedicated = PdhQuery::open(r"\GPU Adapter Memory(*)\Dedicated Usage");
-        self.adapter_shared = PdhQuery::open(r"\GPU Adapter Memory(*)\Shared Usage");
-        self.opened = true;
+        if self.engines.is_none() {
+            match PdhQuery::open(r"\GPU Engine(*)\Utilization Percentage") {
+                Ok(query) => self.engines = Some(query),
+                Err(code) => self.engine_error = code,
+            }
+        }
+        open_into(
+            &mut self.process_dedicated,
+            r"\GPU Process Memory(*)\Dedicated Usage",
+        );
+        open_into(
+            &mut self.process_shared,
+            r"\GPU Process Memory(*)\Shared Usage",
+        );
+        open_into(
+            &mut self.adapter_dedicated,
+            r"\GPU Adapter Memory(*)\Dedicated Usage",
+        );
+        open_into(
+            &mut self.adapter_shared,
+            r"\GPU Adapter Memory(*)\Shared Usage",
+        );
+    }
+}
+
+fn open_into(slot: &mut Option<PdhQuery>, path: &str) {
+    if slot.is_none() {
+        *slot = PdhQuery::open(path).ok();
     }
 }
 
@@ -60,11 +85,15 @@ impl MetricEnricher for GpuEnricher {
     }
 
     fn enrich(&mut self, sample: &mut RawSample) {
-        self.open_once();
+        self.ensure_open();
         if self.engines.is_none() {
+            sample.note(&format!("GPU PDH({:#X})", self.engine_error));
             mark_unknown(sample);
             return;
         }
+        let stale = self
+            .since
+            .is_some_and(|opened| opened.elapsed() >= Duration::from_secs(2));
         match self.engines.as_ref().and_then(PdhQuery::collect) {
             Some(PdhSample::Ready(values)) if values.is_empty() && !self.saw_engine => {
                 self.confirmed_empty = true;
@@ -82,7 +111,23 @@ impl MetricEnricher for GpuEnricher {
                     mark_unknown(sample);
                 }
             }
-            Some(PdhSample::NoData) | None => {
+            Some(PdhSample::NoData) => {
+                if stale && !self.saw_engine {
+                    sample.note("GPU PDH にデータが来ません");
+                }
+                if self.confirmed_empty && !self.saw_engine {
+                    mark_absent(sample);
+                } else {
+                    mark_gap(sample, self.saw_engine);
+                }
+            }
+            None => {
+                if let Some(query) = self.engines.as_ref() {
+                    sample.note(&format!("GPU PDH({:#X})", query.status()));
+                }
+                // A failed query stays failed if we keep the handle. Open again
+                // next interval instead of leaving the cards at N/A.
+                self.engines = None;
                 if self.confirmed_empty && !self.saw_engine {
                     mark_absent(sample);
                 } else {

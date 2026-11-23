@@ -4,6 +4,8 @@
 //! not physical disk transfer. The performance card uses PDH
 //! `\PhysicalDisk(*)\Disk Bytes/sec`, which is a different measurement.
 
+use std::time::{Duration, Instant};
+
 use windows::Win32::System::Threading::{
     GetProcessIoCounters, OpenProcess, IO_COUNTERS, PROCESS_QUERY_LIMITED_INFORMATION,
 };
@@ -18,7 +20,9 @@ use super::pdh::{PdhQuery, PdhSample};
 pub struct DiskEnricher {
     read: Option<PdhQuery>,
     write: Option<PdhQuery>,
-    opened: bool,
+    read_error: u32,
+    write_error: u32,
+    since: Option<Instant>,
 }
 
 impl DiskEnricher {
@@ -26,18 +30,46 @@ impl DiskEnricher {
         Self {
             read: None,
             write: None,
-            opened: false,
+            read_error: 0,
+            write_error: 0,
+            since: None,
         }
     }
 
-    fn open_once(&mut self) {
-        if self.opened {
-            return;
+    fn ensure_open(&mut self) {
+        if self.since.is_none() {
+            self.since = Some(Instant::now());
         }
-        self.read = PdhQuery::open(r"\PhysicalDisk(*)\Disk Read Bytes/sec");
-        self.write = PdhQuery::open(r"\PhysicalDisk(*)\Disk Write Bytes/sec");
-        self.opened = true;
+        if self.read.is_none() {
+            match open_any(&[
+                r"\PhysicalDisk(*)\Disk Read Bytes/sec",
+                r"\PhysicalDisk(_Total)\Disk Read Bytes/sec",
+            ]) {
+                Ok(query) => self.read = Some(query),
+                Err(code) => self.read_error = code,
+            }
+        }
+        if self.write.is_none() {
+            match open_any(&[
+                r"\PhysicalDisk(*)\Disk Write Bytes/sec",
+                r"\PhysicalDisk(_Total)\Disk Write Bytes/sec",
+            ]) {
+                Ok(query) => self.write = Some(query),
+                Err(code) => self.write_error = code,
+            }
+        }
     }
+}
+
+fn open_any(paths: &[&str]) -> Result<PdhQuery, u32> {
+    let mut last = 0u32;
+    for path in paths {
+        match PdhQuery::open(path) {
+            Ok(query) => return Ok(query),
+            Err(code) => last = code,
+        }
+    }
+    Err(last)
 }
 
 impl MetricEnricher for DiskEnricher {
@@ -46,7 +78,7 @@ impl MetricEnricher for DiskEnricher {
     }
 
     fn enrich(&mut self, sample: &mut RawSample) {
-        self.open_once();
+        self.ensure_open();
         for process in &mut sample.processes {
             match process_io(process.pid) {
                 Some((read, write)) => {
@@ -59,8 +91,22 @@ impl MetricEnricher for DiskEnricher {
                 }
             }
         }
-        match (collect(&self.read), collect(&self.write)) {
+        if self.read.is_none() {
+            sample.note(&format!("ディスク読取 PDH({:#X})", self.read_error));
+        }
+        if self.write.is_none() {
+            sample.note(&format!("ディスク書込 PDH({:#X})", self.write_error));
+        }
+        let stale = self
+            .since
+            .is_some_and(|opened| opened.elapsed() >= Duration::from_secs(2));
+        let read = take(&mut self.read, stale, sample);
+        let write = take(&mut self.write, stale, sample);
+        match (read, write) {
             (Some(read), Some(write)) => {
+                if read.is_empty() && write.is_empty() && stale {
+                    sample.note("ディスクの PDH インスタンスがありません");
+                }
                 let devices = without_rollup(zip_device_rates(&read, &write));
                 sample.system_disk_read_bps = sum_side(&devices, true);
                 sample.system_disk_write_bps = sum_side(&devices, false);
@@ -75,12 +121,27 @@ impl MetricEnricher for DiskEnricher {
     }
 }
 
-fn collect(query: &Option<PdhQuery>) -> Option<Vec<(String, f64)>> {
-    let query = query.as_ref()?;
-    match query.collect() {
-        Some(PdhSample::Ready(values)) => Some(values),
-        _ => None,
-    }
+fn take(
+    slot: &mut Option<PdhQuery>,
+    stale: bool,
+    sample: &mut RawSample,
+) -> Option<Vec<(String, f64)>> {
+    let status_on_failure = {
+        let query = slot.as_ref()?;
+        match query.collect() {
+            Some(PdhSample::Ready(values)) => return Some(values),
+            Some(PdhSample::NoData) => {
+                if stale {
+                    sample.note("ディスク PDH にデータが来ません");
+                }
+                return None;
+            }
+            None => query.status(),
+        }
+    };
+    sample.note(&format!("ディスク PDH({status_on_failure:#X})"));
+    *slot = None;
+    None
 }
 
 fn process_io(pid: u32) -> Option<(u64, u64)> {

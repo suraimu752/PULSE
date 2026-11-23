@@ -75,6 +75,46 @@ impl RawProcess {
     }
 }
 
+/// Keep PULSE's own CPU and memory even when Toolhelp omitted this PID or
+/// `OpenProcess` on it failed. A reading that is already present is left alone.
+#[cfg_attr(not(any(windows, test)), allow(dead_code))]
+pub fn ensure_self_row(
+    processes: &mut Vec<RawProcess>,
+    pid: u32,
+    name: &str,
+    creation: Option<u64>,
+    cpu: MetricValue<u64>,
+    memory: MetricValue<u64>,
+) {
+    let has_cpu = matches!(cpu, MetricValue::Value(_));
+    let has_memory = matches!(memory, MetricValue::Value(_));
+    if let Some(existing) = processes.iter_mut().find(|process| process.pid == pid) {
+        if has_cpu && !matches!(existing.cpu_time_100ns, MetricValue::Value(_)) {
+            if existing.creation_time_100ns.is_none() {
+                existing.creation_time_100ns = creation;
+            }
+            existing.cpu_time_100ns = cpu;
+        }
+        if has_memory && !matches!(existing.memory_bytes, MetricValue::Value(_)) {
+            existing.memory_bytes = memory;
+        }
+        return;
+    }
+    if !has_cpu && !has_memory {
+        return;
+    }
+    let label = if name.is_empty() { "PULSE.exe" } else { name };
+    let mut process = RawProcess::new(pid, 0, label);
+    process.creation_time_100ns = creation;
+    if has_cpu {
+        process.cpu_time_100ns = cpu;
+    }
+    if has_memory {
+        process.memory_bytes = memory;
+    }
+    processes.push(process);
+}
+
 /// One polling pass, still in counter form where a rate needs a previous sample.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RawSample {
@@ -142,6 +182,17 @@ impl RawSample {
             warning: None,
             cpu_detail: CpuDetailSnapshot::off(),
         }
+    }
+
+    pub fn note(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        self.warning = Some(match self.warning.take() {
+            Some(existing) if existing.contains(text) => existing,
+            Some(existing) => format!("{existing}; {text}"),
+            None => text.to_string(),
+        });
     }
 }
 
@@ -469,5 +520,65 @@ impl CpuDetailSnapshot {
             mean_busy_percent: None,
             processors: Vec::new(),
         }
+    }
+}
+
+#[cfg(test)]
+mod self_row_tests {
+    use super::*;
+
+    #[test]
+    fn a_missing_self_row_is_filled_from_a_direct_reading() {
+        let mut processes = vec![RawProcess::new(1, 0, "other.exe")];
+        ensure_self_row(
+            &mut processes,
+            42,
+            "PULSE.exe",
+            Some(9),
+            MetricValue::Value(100),
+            MetricValue::Value(4096),
+        );
+        let mine = processes.iter().find(|process| process.pid == 42).unwrap();
+        assert_eq!(mine.cpu_time_100ns, MetricValue::Value(100));
+        assert_eq!(mine.memory_bytes, MetricValue::Value(4096));
+        assert_eq!(mine.creation_time_100ns, Some(9));
+    }
+
+    #[test]
+    fn an_unreadable_self_row_takes_the_direct_reading() {
+        let mut processes = vec![RawProcess::new(42, 0, "PULSE.exe")];
+        ensure_self_row(
+            &mut processes,
+            42,
+            "PULSE.exe",
+            Some(9),
+            MetricValue::Value(50),
+            MetricValue::Value(2048),
+        );
+        assert_eq!(processes.len(), 1);
+        assert_eq!(processes[0].cpu_time_100ns, MetricValue::Value(50));
+        assert_eq!(processes[0].memory_bytes, MetricValue::Value(2048));
+        assert_eq!(processes[0].name, "PULSE.exe");
+    }
+
+    #[test]
+    fn a_real_self_reading_is_not_replaced() {
+        let mut row = RawProcess::new(42, 0, "PULSE.exe");
+        row.creation_time_100ns = Some(3);
+        row.cpu_time_100ns = MetricValue::Value(5);
+        row.memory_bytes = MetricValue::Value(8);
+        let mut processes = vec![row];
+        ensure_self_row(
+            &mut processes,
+            42,
+            "other.exe",
+            Some(9),
+            MetricValue::Value(99),
+            MetricValue::Value(100),
+        );
+        assert_eq!(processes[0].cpu_time_100ns, MetricValue::Value(5));
+        assert_eq!(processes[0].memory_bytes, MetricValue::Value(8));
+        assert_eq!(processes[0].creation_time_100ns, Some(3));
+        assert_eq!(processes[0].name, "PULSE.exe");
     }
 }

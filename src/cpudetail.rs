@@ -141,6 +141,12 @@ impl SwitchLedger {
         self.enabled
     }
 
+    /// True after the first switch or DPC on the event clock.
+    /// A close before that must not stamp a different clock into the ledger.
+    pub fn has_timestamp(&self) -> bool {
+        self.interval_start.is_some()
+    }
+
     /// Logical processors the OS says exist. Ones not yet switched stay unavailable.
     pub fn expect(&mut self, cpus: impl IntoIterator<Item = LogicalCpuId>) {
         self.expected = cpus.into_iter().collect();
@@ -432,7 +438,98 @@ fn percent(part: u64, whole: u64) -> f64 {
     if whole == 0 {
         return 0.0;
     }
-    (part as f64) * 100.0 / (whole as f64)
+    let capped = part.min(whole);
+    (capped as f64) * 100.0 / (whole as f64)
+}
+
+/// Which clock a live ETW session is using.
+///
+/// ProcessTrace converts QPC stamps into 100 ns since 1601 unless the consumer
+/// sets `PROCESS_TRACE_MODE_RAW_TIMESTAMP`. Closing that converted stamp with
+/// `QueryPerformanceCounter` mixes epochs, and a logical CPU lands on 0% or 100%.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClockMode {
+    /// Same counter as `QueryPerformanceCounter`.
+    Qpc,
+    /// 100 ns since 1601, same epoch as `GetSystemTimePreciseAsFileTime`.
+    FileTime,
+}
+
+/// Event stamps and the interval close, on one scale.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SessionClock {
+    mode: ClockMode,
+    /// Frequency of raw event stamps. `TRACE_LOGFILE_HEADER.PerfFreq`.
+    event_hz: u64,
+    /// `QueryPerformanceFrequency`. The QPC close is already in these ticks.
+    qpc_hz: u64,
+}
+
+impl SessionClock {
+    /// QPC session. `perf_freq == 0` means the header did not publish a frequency,
+    /// so event stamps are treated as already being `qpc_hz` ticks.
+    pub fn qpc(perf_freq: u64, qpc_hz: u64) -> Self {
+        let qpc_hz = qpc_hz.max(1);
+        Self {
+            mode: ClockMode::Qpc,
+            event_hz: if perf_freq == 0 { qpc_hz } else { perf_freq },
+            qpc_hz,
+        }
+    }
+
+    pub fn filetime() -> Self {
+        Self {
+            mode: ClockMode::FileTime,
+            event_hz: 10_000_000,
+            qpc_hz: 10_000_000,
+        }
+    }
+
+    /// Raw `EVENT_HEADER.TimeStamp` onto the close clock.
+    pub fn event_ticks(self, raw: u64) -> u64 {
+        match self.mode {
+            ClockMode::FileTime => raw,
+            ClockMode::Qpc => scale_freq(raw, self.event_hz, self.qpc_hz),
+        }
+    }
+
+    /// Interval end on the same clock as [`Self::event_ticks`].
+    pub fn close_ticks(self, qpc: u64, filetime: u64) -> u64 {
+        match self.mode {
+            ClockMode::FileTime => filetime,
+            ClockMode::Qpc => qpc,
+        }
+    }
+}
+
+/// Decide which live clock a raw stamp belongs to.
+///
+/// `qpc_hz` is `QueryPerformanceFrequency`. Five seconds of slack covers a
+/// real-time buffer that flushes once a second.
+pub fn classify_timestamp(raw: u64, qpc: u64, filetime: u64, qpc_hz: u64) -> ClockMode {
+    let qpc_slop = qpc_hz.max(1).saturating_mul(5);
+    let file_slop = 10_000_000u64.saturating_mul(5);
+    let near_qpc = raw.abs_diff(qpc) <= qpc_slop;
+    let near_file = raw.abs_diff(filetime) <= file_slop;
+    if near_qpc {
+        ClockMode::Qpc
+    } else if near_file || raw.abs_diff(filetime) < raw.abs_diff(qpc) {
+        ClockMode::FileTime
+    } else {
+        ClockMode::Qpc
+    }
+}
+
+/// `ticks` counted at `from_hz`, expressed as ticks at `to_hz`.
+pub fn scale_freq(ticks: u64, from_hz: u64, to_hz: u64) -> u64 {
+    if from_hz == 0 || to_hz == 0 || from_hz == to_hz {
+        return ticks;
+    }
+    let whole = ticks / from_hz;
+    let rem = ticks % from_hz;
+    whole
+        .saturating_mul(to_hz)
+        .saturating_add(rem.saturating_mul(to_hz) / from_hz)
 }
 
 /// First two `u32`s of a CSwitch user payload: new TID, old TID.
@@ -766,6 +863,154 @@ mod tests {
         bytes.extend_from_slice(&11u32.to_ne_bytes());
         bytes.extend_from_slice(&22u32.to_ne_bytes());
         assert_eq!(parse_switch_tids(&bytes), Some((11, 22)));
+    }
+
+    #[test]
+    fn filetime_events_closed_on_qpc_are_only_zero_or_one_hundred() {
+        // ProcessTrace's default conversion writes 100 ns since 1601.
+        // The old close() sampled QueryPerformanceCounter. Same 500 ms of
+        // partial busy time then collapses: idle-at-the-boundary becomes 0%,
+        // busy-at-the-boundary becomes 100%.
+        let filetime = 133_000_000_000_000_000u64;
+        let qpc = 80_000_000_000u64;
+        let snap = run_partial(|ms| filetime + ms * 10_000, qpc, qpc + 5_000_000);
+        let usage = |number: u8| usage_of(&snap, number);
+        assert_eq!(usage(0), 0.0, "partial cpu collapsed");
+        assert_eq!(usage(1), 0.0, "partial cpu collapsed");
+        assert_eq!(usage(2), 100.0, "busy-at-boundary collapsed");
+        assert_eq!(usage(3), 0.0, "idle cpu collapsed");
+    }
+
+    #[test]
+    fn partial_switches_on_one_clock_stay_fractional_and_at_most_100() {
+        let assert_partial = |snap: &CpuDetailSnapshot| {
+            let usage = |number: u8| usage_of(snap, number);
+            assert!((usage(0) - 38.0).abs() < 0.05, "cpu0 {}", usage(0));
+            assert!((usage(1) - 12.0).abs() < 0.05, "cpu1 {}", usage(1));
+            assert!((usage(2) - 100.0).abs() < 0.05, "cpu2 {}", usage(2));
+            assert!((usage(3) - 0.0).abs() < 0.05, "cpu3 {}", usage(3));
+            for cpu in &snap.processors {
+                let value = cpu.usage_percent.as_option().expect("usage");
+                assert!(value <= 100.0, "{value}");
+                for process in &cpu.processes {
+                    assert!(process.percent <= 100.0, "{}", process.percent);
+                    assert!(process.percent > 0.0);
+                }
+            }
+            let cpu0 = snap
+                .processors
+                .iter()
+                .find(|cpu| cpu.id.number == 0)
+                .unwrap();
+            let app = cpu0
+                .processes
+                .iter()
+                .find(|row| row.name == "app.exe")
+                .unwrap();
+            let other = cpu0
+                .processes
+                .iter()
+                .find(|row| row.name == "other.exe")
+                .unwrap();
+            assert!((app.percent - 30.0).abs() < 0.05, "{}", app.percent);
+            assert!((other.percent - 8.0).abs() < 0.05, "{}", other.percent);
+            assert!(usage(0) > 0.0 && usage(0) < 100.0);
+            assert!(usage(1) > 0.0 && usage(1) < 100.0);
+        };
+
+        let hz = 10_000_000u64;
+        let origin = 9_000_000_000_000u64;
+        let clock = SessionClock::qpc(hz, hz);
+        let snap = run_partial(
+            |ms| clock.event_ticks(origin + hz / 1000 * ms),
+            clock.close_ticks(origin, 0),
+            clock.close_ticks(origin + hz / 1000 * 500, 0),
+        );
+        assert_partial(&snap);
+
+        // Header PerfFreq is a 3 GHz counter. The close sample is 10 MHz QPC.
+        // Both sides are scaled, so 150 ms of a 500 ms interval stays 30%.
+        let event_hz = 3_000_000_000u64;
+        let qpc_hz = 10_000_000u64;
+        let clock = SessionClock::qpc(event_hz, qpc_hz);
+        let raw_end = origin + event_hz / 1000 * 500;
+        let snap = run_partial(
+            |ms| clock.event_ticks(origin + event_hz / 1000 * ms),
+            clock.close_ticks(scale_freq(origin, event_hz, qpc_hz), 0),
+            clock.close_ticks(scale_freq(raw_end, event_hz, qpc_hz), 0),
+        );
+        assert_partial(&snap);
+
+        let clock = SessionClock::filetime();
+        let snap = run_partial(
+            |ms| clock.event_ticks(origin + 10_000 * ms),
+            clock.close_ticks(0, origin),
+            clock.close_ticks(0, origin + 5_000_000),
+        );
+        assert_partial(&snap);
+    }
+
+    #[test]
+    fn classify_timestamp_follows_the_live_counter() {
+        let qpc_hz = 10_000_000u64;
+        let qpc = 80_000_000_000u64;
+        let filetime = 133_000_000_000_000_000u64;
+        assert_eq!(
+            classify_timestamp(qpc + 20_000, qpc, filetime, qpc_hz),
+            ClockMode::Qpc
+        );
+        assert_eq!(
+            classify_timestamp(filetime + 50_000, qpc, filetime, qpc_hz),
+            ClockMode::FileTime
+        );
+        assert_eq!(
+            scale_freq(1_500_000_000, 3_000_000_000, 10_000_000),
+            5_000_000
+        );
+        assert_eq!(SessionClock::qpc(0, qpc_hz).event_ticks(qpc), qpc);
+        assert_eq!(
+            SessionClock::filetime().close_ticks(qpc, filetime),
+            filetime
+        );
+        assert_eq!(
+            SessionClock::qpc(qpc_hz, qpc_hz).close_ticks(qpc, filetime),
+            qpc
+        );
+    }
+
+    /// Several switches per CPU inside one 500 ms interval.
+    /// `at(ms)` is the event clock. `warm_close` / `end_close` are the interval
+    /// ends the consumer actually passes in.
+    fn run_partial(at: impl Fn(u64) -> u64, warm_close: u64, end_close: u64) -> CpuDetailSnapshot {
+        let mut ledger = ledger();
+        ledger.seed_thread(10, 100, 1, "app.exe");
+        ledger.seed_thread(11, 101, 1, "other.exe");
+        switch(&mut ledger, at(0), 0, 0);
+        switch(&mut ledger, at(0), 1, 0);
+        switch(&mut ledger, at(0), 2, 10);
+        switch(&mut ledger, at(0), 3, 0);
+        let _ = ledger.close(warm_close);
+        // CPU 0: idle 100 ms, app 150 ms, idle 150 ms, other 40 ms, idle 60 ms → 38%.
+        switch(&mut ledger, at(100), 0, 10);
+        switch(&mut ledger, at(250), 0, 0);
+        switch(&mut ledger, at(400), 0, 11);
+        switch(&mut ledger, at(440), 0, 0);
+        // CPU 1: idle 200 ms, app 60 ms, idle the rest → 12%.
+        switch(&mut ledger, at(200), 1, 10);
+        switch(&mut ledger, at(260), 1, 0);
+        // CPU 2 stays non-idle the whole interval → 100%, which is a real full CPU.
+        switch(&mut ledger, at(200), 2, 11);
+        // CPU 3 stays idle → 0%.
+        switch(&mut ledger, at(100), 3, 0);
+        ledger.close(end_close)
+    }
+
+    fn usage_of(snap: &CpuDetailSnapshot, number: u8) -> f64 {
+        snap.processors
+            .iter()
+            .find(|cpu| cpu.id.number == number)
+            .and_then(|cpu| cpu.usage_percent.as_option())
+            .unwrap_or(-1.0)
     }
 
     fn row(pid: u32, create: u64, name: &str, time: u64) -> LogicalCpuProcess {

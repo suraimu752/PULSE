@@ -6,6 +6,7 @@
 
 #[cfg(feature = "ui")]
 use std::os::windows::ffi::OsStrExt;
+use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Instant;
@@ -22,19 +23,22 @@ use windows::Win32::System::Diagnostics::Etw::{
     EVENT_TRACE_FLAG_DPC, EVENT_TRACE_FLAG_INTERRUPT, EVENT_TRACE_FLAG_NO_SYSCONFIG,
     EVENT_TRACE_FLAG_PROCESS, EVENT_TRACE_FLAG_THREAD, EVENT_TRACE_LOGFILEW,
     EVENT_TRACE_PROPERTIES, EVENT_TRACE_REAL_TIME_MODE, EVENT_TRACE_SYSTEM_LOGGER_MODE,
-    PROCESSTRACE_HANDLE, PROCESS_TRACE_MODE_EVENT_RECORD, PROCESS_TRACE_MODE_REAL_TIME,
-    WNODE_FLAG_TRACED_GUID,
+    PROCESSTRACE_HANDLE, PROCESS_TRACE_MODE_EVENT_RECORD, PROCESS_TRACE_MODE_RAW_TIMESTAMP,
+    PROCESS_TRACE_MODE_REAL_TIME, WNODE_FLAG_TRACED_GUID,
 };
 use windows::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
 };
-use windows::Win32::System::Performance::QueryPerformanceCounter;
+use windows::Win32::System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency};
+use windows::Win32::System::SystemInformation::GetSystemTimePreciseAsFileTime;
 use windows::Win32::System::Threading::{
     GetActiveProcessorCount, GetActiveProcessorGroupCount, ALL_PROCESSOR_GROUPS,
 };
 
 use crate::collector::MetricEnricher;
-use crate::cpudetail::{parse_switch_tids, CpuEvent, SwitchLedger};
+use crate::cpudetail::{
+    classify_timestamp, parse_switch_tids, ClockMode, CpuEvent, SessionClock, SwitchLedger,
+};
 use crate::model::{CpuDetailSnapshot, LogicalCpuId, RawProcess, RawSample};
 
 const SESSION: &str = "PULSE-CPU";
@@ -50,9 +54,23 @@ const DC_START: u8 = 3;
 const DC_END: u8 = 4;
 const DPC: u8 = 0x14;
 const ISR: u8 = 0x15;
+const MODE_UNKNOWN: u8 = 0;
+const MODE_QPC: u8 = 1;
+const MODE_FILETIME: u8 = 2;
+/// Real-time event records, with the session clock left unconverted.
+/// Without the raw flag, ProcessTrace rewrites QPC stamps as FILETIME.
+const CONSUMER_MODE: u32 = PROCESS_TRACE_MODE_REAL_TIME
+    | PROCESS_TRACE_MODE_EVENT_RECORD
+    | PROCESS_TRACE_MODE_RAW_TIMESTAMP;
 
 struct Inner {
     ledger: Mutex<SwitchLedger>,
+    /// `QueryPerformanceFrequency`. Fixed for the life of the session.
+    qpc_hz: u64,
+    /// `TRACE_LOGFILE_HEADER.PerfFreq`, or `qpc_hz` once a stamp matches QPC.
+    perf_freq: AtomicU64,
+    /// `MODE_UNKNOWN` until the first stamp shows which clock is live.
+    mode: AtomicU8,
 }
 
 pub struct EtwEnricher {
@@ -89,6 +107,9 @@ impl EtwEnricher {
         }
         let mut inner = Box::new(Inner {
             ledger: Mutex::new(SwitchLedger::new()),
+            qpc_hz: qpc_freq(),
+            perf_freq: AtomicU64::new(0),
+            mode: AtomicU8::new(MODE_UNKNOWN),
         });
         {
             let mut ledger = inner.ledger.lock().unwrap_or_else(|err| err.into_inner());
@@ -101,9 +122,12 @@ impl EtwEnricher {
         stop_own_session()?;
         let control = start_session()?;
         let mut name = session_wide();
-        let opened = open_consumer(inner.as_mut(), &mut name).inspect_err(|_| {
+        let (opened, perf) = open_consumer(inner.as_mut(), &mut name).inspect_err(|_| {
             stop_handle(control);
         })?;
+        if perf > 0 {
+            inner.perf_freq.store(perf, Ordering::Relaxed);
+        }
         let opened_for_thread = opened;
         let join = thread::Builder::new()
             .name("pulse-etw".to_string())
@@ -195,7 +219,18 @@ impl MetricEnricher for EtwEnricher {
                 ledger.mark_lost(u64::from(lost_now - session.lost_seen));
             }
             session.lost_seen = lost_now;
-            let mut detail = ledger.close(qpc_now());
+            if !ledger.has_timestamp() {
+                // No event clock yet. A QPC close here would poison the next
+                // interval if the stamps turn out to be FILETIME.
+                sample.cpu_detail = CpuDetailSnapshot::unavailable(
+                    "論理プロセッサの内訳は、最初の区間が確定するまで N/A です",
+                );
+                return;
+            }
+            let mode = session.inner.mode.load(Ordering::Acquire);
+            let perf = session.inner.perf_freq.load(Ordering::Acquire);
+            let end = close_from(mode, perf, session.inner.qpc_hz);
+            let mut detail = ledger.close(end);
             let extra = u64::try_from(started.elapsed().as_nanos()).unwrap_or(0);
             detail.aggregate_nanos = detail.aggregate_nanos.saturating_add(extra);
             sample.cpu_detail = detail;
@@ -331,17 +366,20 @@ fn query_lost(handle: CONTROLTRACE_HANDLE) -> u32 {
     }
 }
 
-fn open_consumer(inner: &mut Inner, name: &mut [u16]) -> Result<PROCESSTRACE_HANDLE, SessionError> {
+fn open_consumer(
+    inner: &mut Inner,
+    name: &mut [u16],
+) -> Result<(PROCESSTRACE_HANDLE, u64), SessionError> {
     let mut logfile = EVENT_TRACE_LOGFILEW {
         LoggerName: windows::core::PWSTR(name.as_mut_ptr()),
         ..EVENT_TRACE_LOGFILEW::default()
     };
-    logfile.Anonymous1.ProcessTraceMode =
-        PROCESS_TRACE_MODE_REAL_TIME | PROCESS_TRACE_MODE_EVENT_RECORD;
+    logfile.Anonymous1.ProcessTraceMode = CONSUMER_MODE;
     logfile.Anonymous2.EventRecordCallback = Some(on_event);
     logfile.Context = inner as *mut Inner as *mut core::ffi::c_void;
     // SAFETY: `logfile` and `name` stay alive across OpenTrace. The callback
     // context points at `inner`, which the session owns until ProcessTrace returns.
+    // OpenTrace fills `LogfileHeader.PerfFreq` before returning.
     let handle = unsafe { OpenTraceW(&mut logfile) };
     if handle.Value == u64::MAX {
         let status = unsafe { GetLastError() };
@@ -350,7 +388,8 @@ fn open_consumer(inner: &mut Inner, name: &mut [u16]) -> Result<PROCESSTRACE_HAN
             win32("OpenTrace", status)
         )));
     }
-    Ok(handle)
+    let perf = u64::try_from(logfile.LogfileHeader.PerfFreq).unwrap_or(0);
+    Ok((handle, perf))
 }
 
 unsafe extern "system" fn on_event(record: *mut EVENT_RECORD) {
@@ -369,10 +408,14 @@ unsafe extern "system" fn on_event(record: *mut EVENT_RECORD) {
     if !ledger.enabled() {
         return;
     }
-    let time = u64::try_from(record.EventHeader.TimeStamp).unwrap_or(0);
-    if time == 0 {
+    let raw = u64::try_from(record.EventHeader.TimeStamp).unwrap_or(0);
+    if raw == 0 {
         return;
     }
+    // Classify before push. The ledger lock publishes that choice to close().
+    let time = align_stamp(inner, raw);
+    // Group-aware index (group * 64 + number). ProcessorNumber is only the
+    // low byte inside the current group, so a second group would alias CPU 0.
     let cpu = LogicalCpuId::from_processor_index(u32::from(unsafe {
         record.BufferContext.Anonymous.ProcessorIndex
     }));
@@ -417,11 +460,11 @@ unsafe extern "system" fn on_event(record: *mut EVENT_RECORD) {
         return;
     }
     if guid == PerfInfoGuid && (opcode == DPC || opcode == ISR) {
-        if let Some(duration) = unattributed_duration(user, time) {
+        if let Some(duration) = unattributed_duration(user, raw) {
             ledger.push(CpuEvent::Unattributed {
                 time,
                 cpu,
-                duration,
+                duration: align_span(inner, duration),
             });
         }
     }
@@ -515,6 +558,73 @@ fn qpc_now() -> u64 {
         u64::try_from(now).unwrap_or(0)
     } else {
         0
+    }
+}
+
+fn qpc_freq() -> u64 {
+    let mut freq = 0i64;
+    if unsafe { QueryPerformanceFrequency(&mut freq) }.is_ok() {
+        u64::try_from(freq).unwrap_or(10_000_000).max(1)
+    } else {
+        10_000_000
+    }
+}
+
+fn filetime_now() -> u64 {
+    let time = unsafe { GetSystemTimePreciseAsFileTime() };
+    (u64::from(time.dwHighDateTime) << 32) | u64::from(time.dwLowDateTime)
+}
+
+fn align_stamp(inner: &Inner, raw: u64) -> u64 {
+    decide_clock(inner, raw);
+    session_clock(inner).event_ticks(raw)
+}
+
+fn align_span(inner: &Inner, raw_delta: u64) -> u64 {
+    session_clock(inner).event_ticks(raw_delta)
+}
+
+fn session_clock(inner: &Inner) -> SessionClock {
+    close_clock(
+        inner.mode.load(Ordering::Acquire),
+        inner.perf_freq.load(Ordering::Acquire),
+        inner.qpc_hz,
+    )
+}
+
+fn close_from(mode: u8, perf: u64, qpc_hz: u64) -> u64 {
+    close_clock(mode, perf, qpc_hz).close_ticks(qpc_now(), filetime_now())
+}
+
+fn close_clock(mode: u8, perf: u64, qpc_hz: u64) -> SessionClock {
+    if mode == MODE_FILETIME {
+        SessionClock::filetime()
+    } else {
+        SessionClock::qpc(perf, qpc_hz)
+    }
+}
+
+fn decide_clock(inner: &Inner, raw: u64) {
+    if inner.mode.load(Ordering::Acquire) != MODE_UNKNOWN {
+        return;
+    }
+    let qpc = qpc_now();
+    let filetime = filetime_now();
+    let mode = classify_timestamp(raw, qpc, filetime, inner.qpc_hz);
+    let stored = match mode {
+        ClockMode::FileTime => MODE_FILETIME,
+        ClockMode::Qpc => MODE_QPC,
+    };
+    if inner
+        .mode
+        .compare_exchange(MODE_UNKNOWN, stored, Ordering::Release, Ordering::Acquire)
+        .is_ok()
+        && mode == ClockMode::Qpc
+        && raw.abs_diff(qpc) <= inner.qpc_hz.saturating_mul(5)
+    {
+        // The stamp matched QueryPerformanceCounter itself. A header
+        // PerfFreq that disagrees would scale it off that counter.
+        inner.perf_freq.store(inner.qpc_hz, Ordering::Release);
     }
 }
 
@@ -644,6 +754,7 @@ mod tests {
         assert_ne!(flags & EVENT_TRACE_FLAG_THREAD.0, 0);
         assert_ne!(flags & EVENT_TRACE_FLAG_PROCESS.0, 0);
         assert_eq!(props.BufferSize, 64);
+        assert_ne!(CONSUMER_MODE & PROCESS_TRACE_MODE_RAW_TIMESTAMP, 0);
         assert!(props.MinimumBuffers >= 4);
         assert!(props.MaximumBuffers >= props.MinimumBuffers);
         let wide = session_wide();

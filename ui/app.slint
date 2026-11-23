@@ -591,11 +591,11 @@ component Sparkline inherits Rectangle {
             horizontal-stretch: 1;
             min-width: 0px;
             preferred-width: 0px;
-            vertical-stretch: 1;
+            height: 100%;
             Rectangle {
                 y: parent.height - self.height;
                 width: 100%;
-                height: value < 0 ? 0px : parent.height * min(max(value, 0), 100) / 100;
+                height: value <= 0 ? 0px : Math.max(parent.height * Math.min(value, 100) / 100, 2px);
                 background: Theme.graph-bar;
             }
         }

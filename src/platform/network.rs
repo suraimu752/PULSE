@@ -43,8 +43,9 @@ impl MetricEnricher for NetworkEnricher {
             process.net_recv_bytes = MetricValue::Unavailable;
         }
         let rows = match read_adapters() {
-            Some(rows) => rows,
-            None => {
+            Ok(rows) => rows,
+            Err(code) => {
+                sample.note(&format!("ネットワーク GetIfTable2: WIN32_ERROR({code})"));
                 sample.system_net_recv_bps = MetricValue::Unavailable;
                 sample.system_net_send_bps = MetricValue::Unavailable;
                 sample.adapters.clear();
@@ -53,6 +54,9 @@ impl MetricEnricher for NetworkEnricher {
                 return;
             }
         };
+        if rows.is_empty() {
+            sample.note("ネットワークのアダプタが 0 件です");
+        }
         let elapsed = self
             .previous_at
             .map(|started| sample.taken_at.saturating_duration_since(started));
@@ -100,28 +104,41 @@ fn finite(value: f64) -> MetricValue<f64> {
     }
 }
 
-fn read_adapters() -> Option<Vec<AdapterRow>> {
+fn read_adapters() -> Result<Vec<AdapterRow>, u32> {
     unsafe {
         let mut table = std::ptr::null_mut();
-        if GetIfTable2(&mut table).0 != 0 || table.is_null() {
-            return None;
+        let status = GetIfTable2(&mut table);
+        if status.0 != 0 || table.is_null() {
+            return Err(status.0);
         }
         let count = (*table).NumEntries as usize;
         let rows = std::slice::from_raw_parts((*table).Table.as_ptr(), count);
-        let mut adapters = Vec::new();
+        let mut up = Vec::new();
+        let mut rest = Vec::new();
         for row in rows {
-            if row.Type == MIB_IF_TYPE_LOOPBACK || row.OperStatus != IfOperStatusUp {
+            if row.Type == MIB_IF_TYPE_LOOPBACK {
                 continue;
             }
-            adapters.push(AdapterRow {
+            let adapter = AdapterRow {
                 index: row.InterfaceIndex,
                 name: alias(&row.Alias),
                 recv: row.InOctets,
                 send: row.OutOctets,
-            });
+            };
+            if row.OperStatus == IfOperStatusUp {
+                up.push(adapter);
+            } else {
+                rest.push(adapter);
+            }
         }
         FreeMibTable(table.cast());
-        Some(adapters)
+        // An OperStatus the headers don't name used to drop every adapter and
+        // the card stayed N/A. Keep the non-loopback rows in that case.
+        if up.is_empty() {
+            Ok(rest)
+        } else {
+            Ok(up)
+        }
     }
 }
 
