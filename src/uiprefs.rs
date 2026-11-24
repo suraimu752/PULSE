@@ -32,6 +32,8 @@ pub struct UiPrefs {
     pub resource_order: Vec<i32>,
     pub resource_shown: Vec<bool>,
     pub resource_width: f32,
+    /// Left navigation. Missing `nav=` in an older file stays collapsed.
+    pub nav_expanded: bool,
 }
 
 impl Default for UiPrefs {
@@ -42,6 +44,7 @@ impl Default for UiPrefs {
             resource_order: (0..RESOURCE_COUNT as i32).collect(),
             resource_shown: vec![true; RESOURCE_COUNT],
             resource_width: 220.0,
+            nav_expanded: false,
         }
     }
 }
@@ -58,12 +61,49 @@ impl UiPrefs {
         self.column_shown[index] = !self.column_shown[index];
     }
 
+    #[cfg(test)]
     pub fn move_column(&mut self, id: i32, delta: i32) {
         move_in(&mut self.column_order, id, delta);
     }
 
+    #[cfg(test)]
     pub fn drag_column(&mut self, id: i32, dx: f32, widths: &[f32]) {
         drag_in(&mut self.column_order, &self.column_shown, widths, id, dx);
+    }
+
+    /// Move `id` to the column gap under pointer `x` (row coordinates, pixels).
+    pub fn place_column(&mut self, id: i32, x: f32, widths: &[f32]) -> bool {
+        let Some(from) = self.column_order.iter().position(|item| *item == id) else {
+            return false;
+        };
+        let (dest, _) = drop_slot(&self.column_order, &self.column_shown, widths, x);
+        if dest == from || dest == from + 1 {
+            return false;
+        }
+        let value = self.column_order.remove(from);
+        let insert = if dest > from { dest - 1 } else { dest };
+        self.column_order.insert(insert, value);
+        true
+    }
+
+    /// X of the insertion gap in the same coordinates as `place_column`.
+    pub fn column_drop_mark(&self, x: f32, widths: &[f32]) -> f32 {
+        drop_slot(&self.column_order, &self.column_shown, widths, x).1
+    }
+
+    /// Row coordinate of a pointer that is `local` pixels into column `id`.
+    pub fn column_pointer_x(&self, id: i32, local: f32, widths: &[f32]) -> f32 {
+        if !local.is_finite() {
+            return 0.0;
+        }
+        let mut cursor = 0.0_f32;
+        for item in &self.column_order {
+            if *item == id {
+                return cursor + local.max(0.0);
+            }
+            cursor += visible_width(*item, &self.column_shown, widths);
+        }
+        local.max(0.0)
     }
 
     /// Returns the resource that should stay selected.
@@ -141,8 +181,13 @@ impl UiPrefs {
             .collect::<Vec<_>>()
             .join(",");
         format!(
-            "columns={columns}\nhidden={hidden}\nresources={resources}\nresource-hidden={resource_hidden}\nsplit={}\n",
-            self.resource_width
+            "columns={columns}\nhidden={hidden}\nresources={resources}\nresource-hidden={resource_hidden}\nsplit={}\nnav={}\n",
+            self.resource_width,
+            if self.nav_expanded {
+                "expanded"
+            } else {
+                "collapsed"
+            }
         )
     }
 
@@ -190,6 +235,10 @@ impl UiPrefs {
                             prefs.resource_width = width;
                         }
                     }
+                }
+                // Absent on purpose: older files have no `nav=` and stay collapsed.
+                "nav" => {
+                    prefs.nav_expanded = matches!(value.trim(), "expanded" | "1" | "true");
                 }
                 _ => {}
             }
@@ -305,6 +354,34 @@ fn move_in(order: &mut [i32], id: i32, delta: i32) {
     order.swap(from, dest as usize);
 }
 
+fn visible_width(id: i32, shown: &[bool], widths: &[f32]) -> f32 {
+    let index = usize::try_from(id).unwrap_or(usize::MAX);
+    if shown.get(index).copied().unwrap_or(false) {
+        widths.get(index).copied().unwrap_or(0.0).max(0.0)
+    } else {
+        0.0
+    }
+}
+
+fn drop_slot(order: &[i32], shown: &[bool], widths: &[f32], x: f32) -> (usize, f32) {
+    if !x.is_finite() || widths.len() < order.len() {
+        return (0, 0.0);
+    }
+    let mut cursor = 0.0_f32;
+    for (index, item) in order.iter().copied().enumerate() {
+        let width = visible_width(item, shown, widths);
+        if width <= 0.0 {
+            continue;
+        }
+        if x < cursor + width / 2.0 {
+            return (index, cursor);
+        }
+        cursor += width;
+    }
+    (order.len(), cursor)
+}
+
+#[cfg(test)]
 fn drag_in(order: &mut [i32], shown: &[bool], widths: &[f32], id: i32, dx: f32) {
     if !dx.is_finite() || dx.abs() < 8.0 || widths.len() < order.len() {
         return;
@@ -394,6 +471,19 @@ mod tests {
     }
 
     #[test]
+    fn drop_places_the_column_at_the_pointer_gap() {
+        let mut prefs = UiPrefs::default();
+        let widths = vec![100.0; COLUMN_COUNT];
+        assert!((prefs.column_drop_mark(260.0, &widths) - 300.0).abs() < 0.1);
+        assert!(prefs.place_column(0, 260.0, &widths));
+        assert_eq!(&prefs.column_order[..4], &[1, 2, 0, 3]);
+        assert!(!prefs.place_column(1, 40.0, &widths));
+        assert!(prefs.column_shown[0]);
+        prefs.toggle_column(0);
+        assert!(prefs.column_shown[0]);
+    }
+
+    #[test]
     fn hiding_the_selected_resource_falls_forward() {
         let mut prefs = UiPrefs::default();
         let next = prefs.toggle_resource(0, 0);
@@ -421,7 +511,27 @@ mod tests {
         prefs.move_column(3, -1);
         prefs.toggle_resource(4, 0);
         prefs.resource_width = 240.0;
+        prefs.nav_expanded = true;
         let parsed = UiPrefs::parse(&prefs.to_file());
         assert_eq!(parsed, prefs);
+    }
+
+    #[test]
+    fn nav_stays_collapsed_when_the_file_does_not_say() {
+        assert!(!UiPrefs::default().nav_expanded);
+        let old = UiPrefs::parse("columns=name,pid\nsplit=220\n");
+        assert!(!old.nav_expanded);
+        assert!(!UiPrefs::parse("nav=collapsed\n").nav_expanded);
+        assert!(UiPrefs::parse("nav=expanded\n").nav_expanded);
+        let open = UiPrefs {
+            nav_expanded: true,
+            ..UiPrefs::default()
+        };
+        assert!(UiPrefs::parse(&open.to_file()).nav_expanded);
+        let shut = UiPrefs {
+            nav_expanded: false,
+            ..open
+        };
+        assert!(!UiPrefs::parse(&shut.to_file()).nav_expanded);
     }
 }

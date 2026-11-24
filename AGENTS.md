@@ -47,12 +47,20 @@ Collector を足すときは `MetricEnricher` を実装する。UI の列はす�
 ```bash
 cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all-targets --all-features
+cargo test --lib --tests --all-features
 cargo clippy --target x86_64-pc-windows-gnu --no-default-features --all-targets -- -D warnings
 ```
 
 `PULSE.exe` の起動確認は Windows 実機が必要。Linux 上の起動成功をもって Windows で動くと書かない。CI は `.github/workflows/ci.yml`。`windows-latest` が fmt、clippy、test、release ビルド、`PULSE-windows-x64` アーティファクトを担当する。
 
+## UI の意匠
+
+画面の色、文字、余白、罫、構図を変えるときは `.cursor/skills/anything-frontend-art-direction/SKILL.md` に従う。ルールの短文は `.cursor/rules/pulse-ui-design.mdc`。配置を変える前に、誰が何を見てどう判断するかを `docs/decisions.md` に書く。`N/A`、`未対応`、実測の `0` は色でも混ぜない。800×600 で主役の数値が読めること。Web 専用の手順は Slint に読み替える。スキルの `LICENSE` と `NOTICE.md` は改変しない。
+
 ## ライセンス
 
-プロジェクトは GPL-3.0-only。Slint は三つのライセンスから選べるが、このリポジトリでは GPL-3.0-only だけを選ぶ。依存を足す前にライセンスが GPL-3.0-only と組み合わせられることを `docs/licenses.md` に記録する。
+プロジェクトは GPL-3.0-only。Slint は三つのライセンスから選べるが、このリポジトリでは GPL-3.0-only だけを選ぶ。依存を足す前にライセンスが GPL-3.0-only と組み合わせられることを `docs/licenses.md` に記録する。`.cursor/skills/` の MIT と Apache-2.0 はバイナリにリンクしない。
+
+## Windows の起動権限
+
+リリースの `PULSE.exe` はマニフェストで `requireAdministrator` を求める。テストは `cargo test --lib --tests`（空の `PULSE-<hash>` ハーネスは起動しない）。UAC は起動のたびに出る。権限不足の `N/A` 経路は残す。詳細は `docs/decisions.md` 第 22 節。

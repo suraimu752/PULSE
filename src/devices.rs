@@ -44,6 +44,29 @@ pub fn without_rollup(devices: Vec<NamedRate>) -> Vec<NamedRate> {
     }
 }
 
+/// Publish whichever disk side arrived. A missing side stays `N/A` and does
+/// not blank the side that has a real rate.
+pub fn publish_disk_sides(
+    read: Option<&[(String, f64)]>,
+    write: Option<&[(String, f64)]>,
+) -> (Vec<NamedRate>, MetricValue<f64>, MetricValue<f64>) {
+    if read.is_none() && write.is_none() {
+        return (
+            Vec::new(),
+            MetricValue::Unavailable,
+            MetricValue::Unavailable,
+        );
+    }
+    let empty = [];
+    let devices = without_rollup(zip_device_rates(
+        read.unwrap_or(&empty),
+        write.unwrap_or(&empty),
+    ));
+    let read_bps = sum_side(&devices, true);
+    let write_bps = sum_side(&devices, false);
+    (devices, read_bps, write_bps)
+}
+
 pub fn sum_side(devices: &[NamedRate], read: bool) -> MetricValue<f64> {
     if devices.is_empty() {
         return MetricValue::Unavailable;
@@ -95,6 +118,19 @@ mod tests {
         assert_eq!(devices.len(), 1);
         assert_eq!(devices[0].name, "0 C:");
         assert_eq!(sum_side(&devices, true), MetricValue::Value(10.0));
+    }
+
+    #[test]
+    fn a_failed_read_query_does_not_blank_a_real_write_rate() {
+        let write = [("0 C:".to_string(), 12.0)];
+        let (devices, read_bps, write_bps) = publish_disk_sides(None, Some(&write));
+        assert_eq!(devices.len(), 1);
+        assert_eq!(read_bps, MetricValue::Unavailable);
+        assert_eq!(write_bps, MetricValue::Value(12.0));
+        let (devices, read_bps, write_bps) = publish_disk_sides(None, None);
+        assert!(devices.is_empty());
+        assert_eq!(read_bps, MetricValue::Unavailable);
+        assert_eq!(write_bps, MetricValue::Unavailable);
     }
 
     #[test]

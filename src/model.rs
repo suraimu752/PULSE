@@ -501,7 +501,7 @@ impl CpuDetailSnapshot {
     pub fn needs_admin() -> Self {
         Self {
             state: CpuDetailState::NeedsAdmin,
-            message: "詳細なCPUプロセス分析には管理者権限が必要です".to_string(),
+            message: "要管理者".to_string(),
             lost_events: 0,
             events_in_interval: 0,
             aggregate_nanos: 0,

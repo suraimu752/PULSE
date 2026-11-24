@@ -6,12 +6,13 @@
 
 use std::time::{Duration, Instant};
 
+use windows::Win32::Foundation::{CloseHandle, HANDLE};
 use windows::Win32::System::Threading::{
     GetProcessIoCounters, OpenProcess, IO_COUNTERS, PROCESS_QUERY_LIMITED_INFORMATION,
 };
 
 use crate::collector::MetricEnricher;
-use crate::devices::{sum_side, without_rollup, zip_device_rates};
+use crate::devices::publish_disk_sides;
 use crate::metric::MetricValue;
 use crate::model::RawSample;
 
@@ -102,22 +103,14 @@ impl MetricEnricher for DiskEnricher {
             .is_some_and(|opened| opened.elapsed() >= Duration::from_secs(2));
         let read = take(&mut self.read, stale, sample);
         let write = take(&mut self.write, stale, sample);
-        match (read, write) {
-            (Some(read), Some(write)) => {
-                if read.is_empty() && write.is_empty() && stale {
-                    sample.note("ディスクの PDH インスタンスがありません");
-                }
-                let devices = without_rollup(zip_device_rates(&read, &write));
-                sample.system_disk_read_bps = sum_side(&devices, true);
-                sample.system_disk_write_bps = sum_side(&devices, false);
-                sample.disks = devices;
-            }
-            _ => {
-                sample.system_disk_read_bps = MetricValue::Unavailable;
-                sample.system_disk_write_bps = MetricValue::Unavailable;
-                sample.disks.clear();
-            }
+        // One side failing must not blank the side that still has a reading.
+        let (devices, read_bps, write_bps) = publish_disk_sides(read.as_deref(), write.as_deref());
+        if read.is_some() && write.is_some() && devices.is_empty() && stale {
+            sample.note("ディスクの PDH インスタンスがありません");
         }
+        sample.system_disk_read_bps = read_bps;
+        sample.system_disk_write_bps = write_bps;
+        sample.disks = devices;
     }
 }
 
@@ -136,11 +129,16 @@ fn take(
                 }
                 return None;
             }
-            None => query.status(),
+            None => (query.status(), query.should_reopen()),
         }
     };
+    let (status_on_failure, reopen) = status_on_failure;
     sample.note(&format!("ディスク PDH({status_on_failure:#X})"));
-    *slot = None;
+    // A transient miss keeps the primed query. Reopen only after repeated
+    // hard failures, and drop that one side alone.
+    if reopen {
+        *slot = None;
+    }
     None
 }
 
@@ -148,7 +146,15 @@ fn process_io(pid: u32) -> Option<(u64, u64)> {
     if pid == 0 {
         return None;
     }
+    // SAFETY: the access mask asks only for query rights. `IoHandle` closes it
+    // on every return, including when `GetProcessIoCounters` fails. Leaving the
+    // handle open leaked one kernel object per process per sample and, after
+    // long enough, made later `OpenProcess`, PDH, and `GetIfTable2` calls fail.
     let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }.ok()?;
+    if handle.is_invalid() {
+        return None;
+    }
+    let handle = IoHandle(handle);
     let mut counters = IO_COUNTERS {
         ReadOperationCount: 0,
         WriteOperationCount: 0,
@@ -157,7 +163,48 @@ fn process_io(pid: u32) -> Option<(u64, u64)> {
         WriteTransferCount: 0,
         OtherTransferCount: 0,
     };
-    let result = unsafe { GetProcessIoCounters(handle, &mut counters) };
+    let result = unsafe { GetProcessIoCounters(handle.0, &mut counters) };
     result.ok()?;
     Some((counters.ReadTransferCount, counters.WriteTransferCount))
+}
+
+struct IoHandle(HANDLE);
+
+impl Drop for IoHandle {
+    fn drop(&mut self) {
+        if !self.0.is_invalid() {
+            unsafe {
+                let _ = CloseHandle(self.0);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use windows::Win32::System::Threading::{GetCurrentProcess, GetProcessHandleCount};
+
+    fn handle_count() -> u32 {
+        let mut count = 0u32;
+        unsafe {
+            let _ = GetProcessHandleCount(GetCurrentProcess(), &mut count);
+        }
+        count
+    }
+
+    #[test]
+    fn repeated_process_io_does_not_grow_the_handle_table() {
+        let before = handle_count();
+        for _ in 0..400 {
+            let _ = process_io(std::process::id());
+            let _ = process_io(0);
+            let _ = process_io(u32::MAX);
+        }
+        let after = handle_count();
+        assert!(
+            after <= before.saturating_add(8),
+            "process_io leaked handles: {before} -> {after}"
+        );
+    }
 }

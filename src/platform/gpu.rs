@@ -89,17 +89,24 @@ impl MetricEnricher for GpuEnricher {
         if self.engines.is_none() {
             sample.note(&format!("GPU PDH({:#X})", self.engine_error));
             mark_unknown(sample);
+            // Engine counters can be missing while process memory counters still work.
+            apply_memory(sample, self);
             return;
         }
         let stale = self
             .since
             .is_some_and(|opened| opened.elapsed() >= Duration::from_secs(2));
-        match self.engines.as_ref().and_then(PdhQuery::collect) {
+        let engines = self.engines.as_ref().and_then(PdhQuery::collect);
+        let reopen = self.engines.as_ref().is_some_and(PdhQuery::should_reopen);
+        match engines {
             Some(PdhSample::Ready(values)) if values.is_empty() && !self.saw_engine => {
                 self.confirmed_empty = true;
                 mark_absent(sample);
             }
-            Some(PdhSample::Ready(values)) if values.is_empty() => mark_gap(sample, true),
+            Some(PdhSample::Ready(values)) if values.is_empty() => {
+                mark_gap(sample, true);
+                apply_memory(sample, self);
+            }
             Some(PdhSample::Ready(values)) => {
                 if apply_engines(sample, &values) {
                     self.saw_engine = true;
@@ -107,8 +114,10 @@ impl MetricEnricher for GpuEnricher {
                     apply_memory(sample, self);
                 } else if self.saw_engine {
                     mark_gap(sample, true);
+                    apply_memory(sample, self);
                 } else {
                     mark_unknown(sample);
+                    apply_memory(sample, self);
                 }
             }
             Some(PdhSample::NoData) => {
@@ -119,19 +128,23 @@ impl MetricEnricher for GpuEnricher {
                     mark_absent(sample);
                 } else {
                     mark_gap(sample, self.saw_engine);
+                    apply_memory(sample, self);
                 }
             }
             None => {
                 if let Some(query) = self.engines.as_ref() {
                     sample.note(&format!("GPU PDH({:#X})", query.status()));
                 }
-                // A failed query stays failed if we keep the handle. Open again
-                // next interval instead of leaving the cards at N/A.
-                self.engines = None;
+                // Drop the engine query only after repeated hard failures.
+                // Memory counters stay on their own queries.
+                if reopen {
+                    self.engines = None;
+                }
                 if self.confirmed_empty && !self.saw_engine {
                     mark_absent(sample);
                 } else {
                     mark_gap(sample, self.saw_engine);
+                    apply_memory(sample, self);
                 }
             }
         }
@@ -192,9 +205,9 @@ fn apply_engines(sample: &mut RawSample, values: &[(String, f64)]) -> bool {
     true
 }
 
-fn apply_memory(sample: &mut RawSample, enricher: &GpuEnricher) {
-    let dedicated = collect_bytes(&enricher.process_dedicated);
-    let shared = collect_bytes(&enricher.process_shared);
+fn apply_memory(sample: &mut RawSample, enricher: &mut GpuEnricher) {
+    let dedicated = collect_bytes(&mut enricher.process_dedicated);
+    let shared = collect_bytes(&mut enricher.process_shared);
     match (&dedicated, &shared) {
         (None, None) => {
             for process in &mut sample.processes {
@@ -220,8 +233,8 @@ fn apply_memory(sample: &mut RawSample, enricher: &GpuEnricher) {
             }
         }
     }
-    let adapter_dedicated = max_by_luid(collect_bytes(&enricher.adapter_dedicated).as_deref());
-    let adapter_shared = max_by_luid(collect_bytes(&enricher.adapter_shared).as_deref());
+    let adapter_dedicated = max_by_luid(collect_bytes(&mut enricher.adapter_dedicated).as_deref());
+    let adapter_shared = max_by_luid(collect_bytes(&mut enricher.adapter_shared).as_deref());
     if adapter_dedicated.is_empty() && adapter_shared.is_empty() {
         sample.system_vram_dedicated_bytes = if dedicated.is_some() {
             MetricValue::Value(sample.processes.iter().fold(0u64, |sum, process| {
@@ -246,12 +259,19 @@ fn apply_memory(sample: &mut RawSample, enricher: &GpuEnricher) {
     sample.system_vram_shared_bytes = sum_map(&adapter_shared);
 }
 
-fn collect_bytes(query: &Option<PdhQuery>) -> Option<Vec<(String, f64)>> {
-    let query = query.as_ref()?;
-    match query.collect()? {
-        PdhSample::Ready(values) => Some(values),
-        PdhSample::NoData => None,
+fn collect_bytes(slot: &mut Option<PdhQuery>) -> Option<Vec<(String, f64)>> {
+    let (values, reopen) = {
+        let query = slot.as_ref()?;
+        match query.collect() {
+            Some(PdhSample::Ready(values)) => (Some(values), false),
+            Some(PdhSample::NoData) => (None, false),
+            None => (None, query.should_reopen()),
+        }
+    };
+    if reopen {
+        *slot = None;
     }
+    values
 }
 
 fn sum_by_pid(values: &[(String, f64)]) -> HashMap<u32, u64> {

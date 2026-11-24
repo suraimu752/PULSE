@@ -70,6 +70,8 @@ pub fn run(options: LaunchOptions) -> Result<(), String> {
     let retained = sampler.take_retained();
     let ui = AppWindow::new().map_err(|err| format!("ウィンドウを作成できませんでした: {err}"))?;
     ui.set_version_text(format!("PULSE {}", env!("CARGO_PKG_VERSION")).into());
+    ui.set_privilege_text(crate::platform::privilege_label().into());
+    ui.set_privilege_short(crate::platform::privilege_short().into());
     ui.set_page(options.page);
     if let Some(resource) = options.resource {
         ui.set_resource(resource);
@@ -78,9 +80,10 @@ pub fn run(options: LaunchOptions) -> Result<(), String> {
     if let Some(theme) = options.theme {
         ui.global::<Theme>().set_preference(theme);
     }
-    if let Some((width, height)) = options.size {
-        ui.window().set_size(slint::LogicalSize::new(width, height));
-    }
+    // Preferred size in ui/app.slint. Not written to ui.cfg, so every launch
+    // without --size opens here, including the first one.
+    let (width, height) = options.size.unwrap_or((1080.0, 720.0));
+    ui.window().set_size(slint::LogicalSize::new(width, height));
     // System mode follows AppsUseLightTheme. Missing key stays light.
     ui.global::<Theme>()
         .set_system_light(crate::platform::apps_use_light_theme().unwrap_or(true));
@@ -165,6 +168,7 @@ pub fn run(options: LaunchOptions) -> Result<(), String> {
         state.borrow_mut().resource = ResourceId::from_index(next);
         ui.set_resource(next);
     }
+    wire_nav(&ui, &prefs);
     wire_layout(&ui, &state, latest.clone(), &prefs);
     if options.menu.as_deref() == Some("columns") {
         ui.set_page(0);
@@ -264,6 +268,7 @@ fn apply_prefs(ui: &AppWindow, prefs: &crate::uiprefs::UiPrefs) {
     ui.set_resource_order(ModelRc::new(VecModel::from(prefs.resource_order.clone())));
     ui.set_resource_shown(ModelRc::new(VecModel::from(prefs.resource_shown.clone())));
     ui.set_resource_pref(prefs.resource_width);
+    ui.set_nav_expanded(prefs.nav_expanded);
 }
 
 fn column_widths(ui: &AppWindow) -> Vec<f32> {
@@ -281,6 +286,14 @@ fn column_widths(ui: &AppWindow) -> Vec<f32> {
         columns.get_vram(),
         columns.get_shared(),
     ]
+}
+
+fn wire_nav(ui: &AppWindow, prefs: &Rc<RefCell<crate::uiprefs::UiPrefs>>) {
+    let prefs = Rc::clone(prefs);
+    ui.on_nav_changed(move |expanded| {
+        prefs.borrow_mut().nav_expanded = expanded;
+        crate::uiprefs::save(&prefs.borrow());
+    });
 }
 
 fn wire_layout(
@@ -304,26 +317,32 @@ fn wire_layout(
     {
         let ui_weak = ui.as_weak();
         let prefs = Rc::clone(prefs);
-        ui.on_column_moved(move |id, delta| {
+        ui.on_column_drag_preview(move |id, x| {
             let Some(ui) = ui_weak.upgrade() else {
                 return;
             };
-            prefs.borrow_mut().move_column(id, delta);
-            apply_prefs(&ui, &prefs.borrow());
-            crate::uiprefs::save(&prefs.borrow());
+            let widths = column_widths(&ui);
+            let prefs = prefs.borrow();
+            let at = prefs.column_pointer_x(id, x, &widths);
+            let mark = prefs.column_drop_mark(at, &widths);
+            ui.set_column_dragging(true);
+            ui.set_column_drop_x(mark);
         });
     }
     {
         let ui_weak = ui.as_weak();
         let prefs = Rc::clone(prefs);
-        ui.on_column_dragged(move |id, dx| {
+        ui.on_column_drag_drop(move |id, x| {
             let Some(ui) = ui_weak.upgrade() else {
                 return;
             };
+            ui.set_column_dragging(false);
             let widths = column_widths(&ui);
-            prefs.borrow_mut().drag_column(id, dx, &widths);
-            apply_prefs(&ui, &prefs.borrow());
-            crate::uiprefs::save(&prefs.borrow());
+            let at = prefs.borrow().column_pointer_x(id, x, &widths);
+            if prefs.borrow_mut().place_column(id, at, &widths) {
+                apply_prefs(&ui, &prefs.borrow());
+                crate::uiprefs::save(&prefs.borrow());
+            }
         });
     }
     {
@@ -597,11 +616,8 @@ fn paint_logical(ui: &AppWindow, state: &Rc<RefCell<UiState>>, sample: &Publishe
     ui.set_cpu_admin(detail.state == CpuDetailState::NeedsAdmin);
     match detail.state {
         CpuDetailState::Ready => {
-            ui.set_cpu_message(
-                "この割合は、その論理プロセッサ上の時間を区間の長さで割った値です。全体 CPU とは分母が違います。"
-                    .into(),
-            );
-            ui.set_detail_note("アイドルは順位に入れません。".into());
+            ui.set_cpu_message("".into());
+            ui.set_detail_note("".into());
             if let Some(id) = selected {
                 if let Some((index, cpu)) =
                     processors.iter().enumerate().find(|(_, cpu)| cpu.id == id)
@@ -633,26 +649,15 @@ fn paint_logical(ui: &AppWindow, state: &Rc<RefCell<UiState>>, sample: &Publishe
                             },
                         })
                         .collect();
-                    ui.set_rank_caption(
-                        format!("CPU {index} のプロセス（この CPU の時間 ÷ 区間）").into(),
-                    );
-                    ui.set_rank_empty(
-                        if rows.is_empty() {
-                            "実測値のあるプロセスはありません。"
-                        } else {
-                            ""
-                        }
-                        .into(),
-                    );
+                    ui.set_rank_caption(format!("CPU {index}").into());
+                    ui.set_rank_empty(if rows.is_empty() { "該当なし" } else { "" }.into());
                     sync_model(&state.borrow().top, rows);
                 }
             }
         }
         CpuDetailState::Off => {
             ui.set_detail_note("".into());
-            ui.set_cpu_message(
-                "詳細分析はオフです。全体 CPU とプロセス一覧は計測を続けます。".into(),
-            );
+            ui.set_cpu_message("分析オフ".into());
             ui.set_rank_caption("論理 CPU のプロセス".into());
             ui.set_rank_empty("N/A".into());
             sync_model(&state.borrow().top, Vec::new());
@@ -777,11 +782,6 @@ fn apply(ui: &AppWindow, state: &Rc<RefCell<UiState>>, sample: &PublishedSample,
         sample.self_memory,
         &sample.updated_text,
     );
-    let line = if sample.demo {
-        format!("DEMO DATA    {line}")
-    } else {
-        line
-    };
     ui.set_demo(sample.demo);
     ui.set_status_text(line.into());
     match &sample.snapshot.warning {
@@ -914,7 +914,7 @@ fn paint_history(
     ui.set_rank_caption(caption.into());
     ui.set_rank_empty(
         if empty.is_empty() {
-            "実測値のあるプロセスはありません。"
+            "該当なし"
         } else {
             empty.as_str()
         }
@@ -1380,9 +1380,74 @@ mod layout_tests {
     }
 
     #[test]
-    fn performance_page_fits_light_and_dark_at_three_sizes() {
+    fn the_nav_starts_collapsed() {
+        backend();
+        let ui = AppWindow::new().expect("window");
+        assert!(!ui.get_nav_expanded());
+    }
+
+    #[test]
+    fn analysis_switch_sits_at_the_right_of_the_cpu_segments() {
+        let ui = open_performance(1080.0, 720.0, false);
+        let logical = ElementHandle::find_by_accessible_label(&ui, "論理プロセッサ別表示")
+            .next()
+            .expect("logical segment");
+        let switch = ElementHandle::find_by_accessible_label(&ui, "分析")
+            .next()
+            .expect("analysis switch");
+        assert!(
+            ElementHandle::find_by_accessible_label(&ui, "詳細なCPU分析")
+                .next()
+                .is_none()
+        );
+        assert_eq!(
+            switch.accessible_role(),
+            Some(i_slint_backend_testing::AccessibleRole::Switch)
+        );
+        assert_eq!(switch.accessible_checked(), Some(false));
+        let weak = ui.as_weak();
+        ui.on_cpu_detail_toggle(move || {
+            let Some(ui) = weak.upgrade() else {
+                return;
+            };
+            ui.set_cpu_detail_on(!ui.get_cpu_detail_on());
+        });
+        switch.mock_single_click(slint::platform::PointerEventButton::Left);
+        assert!(ui.get_cpu_detail_on());
+        assert_eq!(switch.accessible_checked(), Some(true));
+        switch.invoke_accessible_default_action();
+        assert!(!ui.get_cpu_detail_on());
+        let logical_at = logical.absolute_position();
+        let switch_at = switch.absolute_position();
+        let switch_size = switch.size();
+        assert!(
+            switch_size.width < 64.0 && switch_size.width > 36.0,
+            "switch width {} should stay a pill, not a stretched segment",
+            switch_size.width
+        );
+        assert!(switch_at.x >= logical_at.x + logical.size().width - 1.0);
+        assert!((switch_at.y - logical_at.y).abs() < 8.0);
+        let detail = element(&ui, "detail-column");
+        let detail_right = detail.absolute_position().x + detail.size().width;
+        let switch_right = switch_at.x + switch_size.width;
+        assert!(switch_right <= detail_right + 1.0);
+        assert!(
+            detail_right - switch_right < 28.0,
+            "switch should sit on the right edge, gap was {}",
+            detail_right - switch_right
+        );
+        let _ = ui.hide();
+    }
+
+    #[test]
+    fn performance_page_fits_light_and_dark_at_the_checked_sizes() {
         for dark in [false, true] {
-            for (width, height) in [(1280.0, 720.0), (1920.0, 1080.0), (800.0, 600.0)] {
+            for (width, height) in [
+                (1080.0, 720.0),
+                (1280.0, 720.0),
+                (1920.0, 1080.0),
+                (800.0, 600.0),
+            ] {
                 let ui = open_performance(width, height, dark);
                 assert_eq!(ui.global::<Theme>().get_dark(), dark);
                 assert_performance_fits(&ui, width, height);
@@ -1529,12 +1594,14 @@ mod layout_tests {
         let ui = open_performance(1280.0, 720.0, false);
         ui.set_page(0);
         ui.set_column_menu_open(true);
+        ui.set_column_dragging(true);
+        ui.set_column_drop_x(48.0);
         ui.show().expect("show");
         let menu = element(&ui, "column-menu");
         let at = menu.absolute_position();
         let size = menu.size();
         assert!(
-            size.width >= 260.0 && size.height > 200.0,
+            size.width >= 180.0 && size.height > 200.0,
             "column menu is {} x {}",
             size.width,
             size.height
@@ -1542,16 +1609,21 @@ mod layout_tests {
         assert!(at.x >= 0.0 && at.y >= 0.0);
         assert!(at.x + size.width <= 1280.0 + 1.0);
         assert!(at.y + size.height <= 720.0 + 1.0);
-        let down = ElementHandle::find_by_accessible_label(&ui, "名前 を下へ")
+        let memory = ElementHandle::find_by_accessible_label(&ui, "メモリ の表示")
             .next()
-            .expect("name down button");
+            .expect("memory column check");
         assert!(
-            inside(&down, &menu),
-            "down button {:?} is outside the menu {:?} {:?}",
-            (down.absolute_position(), down.size()),
+            inside(&memory, &menu),
+            "column check {:?} is outside the menu {:?} {:?}",
+            (memory.absolute_position(), memory.size()),
             at,
             size
         );
+        assert!(ElementHandle::find_by_accessible_label(&ui, "列の表示")
+            .next()
+            .is_none());
+        let bar = element(&ui, "column-drop");
+        assert!(bar.size().width >= 2.0 && bar.size().height > 8.0);
         let button = ElementHandle::find_by_accessible_label(&ui, "資源の表示").next();
         assert!(
             button.is_none(),

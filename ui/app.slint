@@ -1,47 +1,49 @@
 import { ListView } from "std-widgets.slint";
 
-// Surfaces are layered (sidebar, canvas, card), not inverted. Accent is for
-// selection, the active sort, and measured values only.
+// Instrument surfaces: the sidebar sits behind the work, the card holds the
+// reading, and one meter green is the needle (selection, sort, graph, hero).
+// N/A stays amber and 未対応 stays gray so neither looks like a measured zero.
 export global Theme {
     // 0 light, 1 dark, 2 follow AppsUseLightTheme.
     in-out property <int> preference: 2;
     in-out property <bool> system-light: true;
     out property <bool> dark: preference == 1 ? true : preference == 0 ? false : !system-light;
 
-    out property <color> canvas: dark ? #1e1e1e : #f3f3f3;
-    out property <color> sidebar: dark ? #181818 : #f7f7f7;
-    out property <color> card: dark ? #2a2a2a : #ffffff;
-    out property <color> header: dark ? #333333 : #f6f6f6;
-    out property <color> header-hover: dark ? #3d3d3d : #ececec;
-    out property <color> row: dark ? #2a2a2a : #ffffff;
-    out property <color> row-alt: dark ? #242424 : #f3f6f9;
-    out property <color> line: dark ? #454545 : #e1e1e1;
-    out property <color> text: dark ? #f3f3f3 : #1a1a1a;
-    out property <color> text-secondary: dark ? #d4d4d4 : #3a3a3a;
-    out property <color> text-muted: dark ? #b8b8b8 : #4f4f4f;
-    out property <color> accent: dark ? #6cbcf5 : #0f6cbd;
-    out property <color> accent-text: dark ? #9ed4ff : #0c4f8c;
-    out property <color> nav-selected: dark ? #12344d : #e5f1fb;
-    out property <color> nav-hover: dark ? #2c2c2c : #ededed;
-    out property <color> nav-pressed: dark ? #3a3a3a : #e2e2e2;
-    out property <color> card-hover: dark ? #323232 : #f5f5f5;
-    out property <color> card-pressed: dark ? #3a3a3a : #e8e8e8;
-    out property <color> unavailable: dark ? #f0c36a : #8a4e00;
-    out property <color> unsupported: dark ? #b0b0b0 : #5a5a5a;
+    out property <color> canvas: dark ? #141a17 : #f6f4ef;
+    out property <color> sidebar: dark ? #0e1311 : #ebe7df;
+    out property <color> card: dark ? #1c2622 : #fffcf8;
+    out property <color> header: dark ? #24302b : #f3f0e8;
+    out property <color> header-hover: dark ? #2c3b34 : #e7e2d6;
+    out property <color> row: dark ? #1c2622 : #fffcf8;
+    out property <color> row-alt: dark ? #18211e : #f4f1ea;
+    out property <color> line: dark ? #314038 : #e4ddd0;
+    out property <color> text: dark ? #e8f2ec : #1c1914;
+    out property <color> text-secondary: dark ? #c5d5cc : #3a342c;
+    out property <color> text-muted: dark ? #a8bdb2 : #5c5348;
+    out property <color> accent: dark ? #8fd9c4 : #0c6b52;
+    out property <color> accent-text: dark ? #c8f6e8 : #084838;
+    out property <color> nav-selected: dark ? #14352c : #dceee6;
+    out property <color> nav-hover: dark ? #1a2420 : #e3ddd2;
+    out property <color> nav-pressed: dark ? #24342e : #d8d1c4;
+    out property <color> card-hover: dark ? #24342e : #f7f4ee;
+    out property <color> card-pressed: dark ? #2c3f37 : #efeae1;
+    out property <color> unavailable: dark ? #f0c36a : #8a4b00;
+    out property <color> unsupported: dark ? #a8b3ae : #5c564e;
     out property <color> warn-bg: dark ? #3a3116 : #fff4ce;
-    out property <color> warn-border: dark ? #8d7340 : #e6c200;
+    out property <color> warn-border: dark ? #8d7340 : #e0b84a;
     out property <color> warn-text: dark ? #f6e7c1 : #5c4a00;
-    out property <color> graph-bg: dark ? #1a242e : #f3f7fb;
-    out property <color> graph-plot: dark ? #12181f : #ffffff;
-    out property <color> graph-border: dark ? #314556 : #d5e3f0;
-    out property <color> graph-bar: dark ? #4aa3e0 : #0f6cbd;
-    // Dark track sits clearly above the card so the gutter reads when the thumb is hidden.
-    out property <color> scroll-track: dark ? #404040 : #e4e4e4;
-    out property <color> scroll-thumb: dark ? #c0c0c0 : #5c5c5c;
-    out property <color> scroll-thumb-hover: dark ? #d4d4d4 : #3f3f3f;
-    out property <color> scroll-thumb-pressed: dark ? #e4e4e4 : #2a2a2a;
-    out property <color> grip: dark ? #6a6a6a : #c4c4c4;
-    out property <color> chip: dark ? #2e2e2e : #ffffff;
+    out property <color> graph-bg: dark ? #10211b : #e7f3ee;
+    out property <color> graph-plot: dark ? #0e1613 : #fffcf8;
+    out property <color> graph-border: dark ? #2a4a40 : #c9ddd4;
+    out property <color> graph-bar: dark ? #8fd9c4 : #0c6b52;
+    // The track stays visible against the card when the thumb is hidden.
+    out property <color> scroll-track: dark ? #2a3530 : #e6e1d6;
+    // Dark thumb stays in the instrument greens. The old #b7c4bc read as a white bar.
+    out property <color> scroll-thumb: dark ? #6e8b7e : #6e675c;
+    out property <color> scroll-thumb-hover: dark ? #8fd9c4 : #4e483f;
+    out property <color> scroll-thumb-pressed: dark ? #d7f3ea : #2e2a24;
+    out property <color> grip: dark ? #4a5c54 : #c9c2b4;
+    out property <color> chip: dark ? #1c2622 : #fffcf8;
 }
 
 export enum CellKind { value, zero, unavailable, unsupported }
@@ -285,8 +287,9 @@ component HeaderCell inherits Rectangle {
     callback resized(length);
     callback sort-clicked();
     callback wheel-scrolled(length, length);
-    callback context-menu();
-    callback dragged(length);
+    callback context-menu(length, length);
+    callback drag-preview(length);
+    callback drag-drop(length);
 
     width: col-width;
     preferred-width: col-width;
@@ -319,19 +322,23 @@ component HeaderCell inherits Rectangle {
         }
         pointer-event(event) => {
             if (event.button == PointerEventButton.right && event.kind == PointerEventKind.down) {
-                root.context-menu();
+                root.context-menu(self.absolute-position.x, self.absolute-position.y + self.height);
             }
             if (event.button == PointerEventButton.left && event.kind == PointerEventKind.down) {
                 root.down-x = self.mouse-x;
                 root.dragging = false;
             }
             if (event.button == PointerEventButton.left && event.kind == PointerEventKind.up && root.dragging) {
-                root.dragged(self.mouse-x - root.down-x);
+                root.drag-drop(self.mouse-x);
+                root.dragging = false;
             }
         }
         moved => {
             if (self.pressed && (self.mouse-x - root.down-x > 8px || root.down-x - self.mouse-x > 8px)) {
                 root.dragging = true;
+            }
+            if (root.dragging && self.pressed) {
+                root.drag-preview(self.mouse-x);
             }
         }
         scroll-event(event) => {
@@ -397,14 +404,14 @@ component WinScrollBar inherits Rectangle {
     property <length> grab-value: 0px;
     property <length> grab-pos: 0px;
 
-    background: Theme.scroll-track;
+    background: root.overflow ? Theme.scroll-track : transparent;
 
     thumb := Rectangle {
         visible: root.overflow;
-        x: root.horizontal ? root.thumb-pos + 2px : 3px;
-        y: root.horizontal ? 3px : root.thumb-pos + 2px;
-        width: root.horizontal ? max(0px, root.thumb-len - 4px) : 8px;
-        height: root.horizontal ? 8px : max(0px, root.thumb-len - 4px);
+        x: root.horizontal ? root.thumb-pos + 2px : 4px;
+        y: root.horizontal ? 4px : root.thumb-pos + 2px;
+        width: root.horizontal ? max(0px, root.thumb-len - 4px) : 6px;
+        height: root.horizontal ? 6px : max(0px, root.thumb-len - 4px);
         border-radius: 4px;
         background: root.thumb-color;
     }
@@ -581,9 +588,14 @@ component NavEntry inherits Rectangle {
 component Sparkline inherits Rectangle {
     in property <[float]> points;
     height: 18px;
-    background: Theme.graph-plot;
-    border-radius: 3px;
+    background: transparent;
     clip: true;
+    Rectangle {
+        y: parent.height - 1px;
+        width: 100%;
+        height: 1px;
+        background: Theme.line;
+    }
     HorizontalLayout {
         width: 100%;
         height: 100%;
@@ -614,15 +626,25 @@ component ResourceButton inherits TouchArea {
     Rectangle {
         width: 100%;
         height: 100%;
-        border-radius: 8px;
-        border-width: 1px;
-        border-color: root.active ? Theme.accent : Theme.line;
-        background: root.pressed ? Theme.card-pressed : root.active ? Theme.nav-selected : root.has-hover ? Theme.card-hover : Theme.card;
+        background: root.pressed ? Theme.nav-pressed : root.active ? Theme.nav-selected : root.has-hover ? Theme.header-hover : transparent;
+        if root.active: Rectangle {
+            x: 0px;
+            y: 0px;
+            width: 2px;
+            height: 100%;
+            background: Theme.accent;
+        }
+        Rectangle {
+            y: parent.height - 1px;
+            width: 100%;
+            height: 1px;
+            background: Theme.line;
+        }
         VerticalLayout {
-            padding-left: 10px;
+            padding-left: 12px;
             padding-right: 10px;
-            padding-top: 6px;
-            padding-bottom: 6px;
+            padding-top: 8px;
+            padding-bottom: 8px;
             spacing: 2px;
             alignment: start;
             Text {
@@ -658,11 +680,7 @@ component HistoryGraph inherits Rectangle {
     min-width: 0px;
     preferred-width: 0px;
     horizontal-stretch: 1;
-    background: Theme.graph-bg;
-    border-radius: 8px;
-    border-width: 1px;
-    border-color: Theme.graph-border;
-    clip: true;
+    background: transparent;
     VerticalLayout {
         padding: root.tight ? 4px : 12px;
         spacing: root.tight ? 2px : 6px;
@@ -693,10 +711,11 @@ component HistoryGraph inherits Rectangle {
                 vertical-stretch: 1;
                 min-width: 0px;
                 min-height: 0px;
-                background: Theme.graph-plot;
-                border-width: 1px;
-                border-color: Theme.graph-border;
+                background: transparent;
                 clip: true;
+                Rectangle { y: 0px; width: 100%; height: 1px; background: Theme.line; }
+                Rectangle { y: parent.height / 2; width: 100%; height: 1px; background: Theme.line; }
+                Rectangle { y: parent.height - 1px; width: 100%; height: 1px; background: Theme.line; }
                 HorizontalLayout {
                     x: 0px;
                     y: 0px;
@@ -777,6 +796,52 @@ component ThemeChip inherits Rectangle {
                 horizontal-alignment: center;
                 vertical-alignment: center;
             }
+        }
+    }
+}
+
+component ColumnCheck inherits Rectangle {
+    in property <string> label;
+    in property <bool> checked;
+    in property <bool> locked: false;
+    callback toggled();
+    height: 28px;
+    background: touch.has-hover && !root.locked ? Theme.header-hover : transparent;
+    touch := TouchArea {
+        width: 100%;
+        height: 100%;
+        enabled: !root.locked;
+        accessible-role: button;
+        accessible-label: root.label + " の表示";
+        clicked => { root.toggled(); }
+        Rectangle {
+            x: 10px;
+            y: (parent.height - self.height) / 2;
+            width: 14px;
+            height: 14px;
+            border-width: 1px;
+            border-color: root.checked ? Theme.accent : Theme.line;
+            background: transparent;
+            Text {
+                width: 100%;
+                height: 100%;
+                text: root.checked ? "✓" : "";
+                font-size: 11px;
+                color: Theme.accent;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+        Text {
+            x: 32px;
+            width: parent.width - 40px;
+            height: 100%;
+            text: root.label;
+            font-size: 13px;
+            color: root.locked ? Theme.text-muted : Theme.text;
+            horizontal-alignment: left;
+            vertical-alignment: center;
+            overflow: elide;
         }
     }
 }
@@ -901,9 +966,70 @@ export struct CpuCard {
     selected: bool,
 }
 
+// Pill and knob. The track takes the needle color only while analysis is on.
+// The knob stays the color that still reads on that track.
+component AnalysisSwitch inherits FocusScope {
+    in property <bool> on;
+    callback toggled();
+    horizontal-stretch: 0;
+    width: 48px;
+    height: 28px;
+    accessible-role: switch;
+    accessible-label: "分析";
+    accessible-checked: on;
+    accessible-action-default => { root.toggled(); }
+
+    key-pressed(event) => {
+        if (event.text == Key.Space) {
+            root.toggled();
+            accept
+        } else {
+            reject
+        }
+    }
+
+    Rectangle {
+        width: 100%;
+        height: 100%;
+        border-radius: 14px;
+        border-width: root.has-focus ? 2px : 0px;
+        border-color: Theme.text;
+        background: transparent;
+    }
+
+    track := Rectangle {
+        x: 2px;
+        y: (parent.height - self.height) / 2;
+        width: parent.width - 4px;
+        height: 26px;
+        border-radius: 13px;
+        background: root.on ? Theme.accent : Theme.grip;
+
+        Rectangle {
+            x: root.on ? parent.width - self.width - 3px : 3px;
+            y: (parent.height - self.height) / 2;
+            width: 20px;
+            height: 20px;
+            border-radius: 10px;
+            background: root.on && Theme.dark ? #0e1613 : #fffcf8;
+            animate x { duration: 160ms; easing: cubic-bezier(0.23, 1, 0.32, 1); }
+        }
+    }
+
+    TouchArea {
+        width: 100%;
+        height: 100%;
+        accessible-role: none;
+        clicked => {
+            root.focus();
+            root.toggled();
+        }
+    }
+}
+
 export component AppWindow inherits Window {
     title: "PULSE";
-    preferred-width: 1280px;
+    preferred-width: 1080px;
     preferred-height: 720px;
     min-width: 800px;
     min-height: 560px;
@@ -912,7 +1038,7 @@ export component AppWindow inherits Window {
     default-font-size: 13px;
 
     in-out property <int> page: 0;
-    in-out property <bool> nav-expanded: true;
+    in-out property <bool> nav-expanded: false;
     in-out property <int> resource: 0;
     in-out property <string> sort-column: "cpu";
     in-out property <bool> sort-desc: true;
@@ -924,7 +1050,9 @@ export component AppWindow inherits Window {
     in-out property <string> detail-value: "N/A";
     in-out property <int> detail-kind: 2;
     in-out property <string> detail-extra: "";
-    in-out property <string> detail-note: "計測を開始しています。ダミー値は表示しません。";
+    in-out property <string> detail-note: "";
+    in-out property <string> privilege-text: "権限は未判定";
+    in-out property <string> privilege-short: "未判定";
     in-out property <bool> detail-graph: false;
     in-out property <bool> demo: false;
     in-out property <int> history-cursor: -1;
@@ -974,6 +1102,7 @@ export component AppWindow inherits Window {
     callback cpu-view-set(int);
     callback cpu-detail-toggle();
     callback cpu-elevate();
+    callback nav-changed(bool);
     in-out property <[float]> cpu-series;
     in-out property <[int]> cpu-slots;
     in property <int> cpu-stride: 120;
@@ -990,12 +1119,19 @@ export component AppWindow inherits Window {
     in-out property <string> history-outside: "";
     in-out property <string> history-hover: "";
     in-out property <string> rank-caption: "この時点の上位プロセス";
-    in-out property <string> rank-empty: "実測値のあるプロセスはありません。";
+    in-out property <string> rank-empty: "該当なし";
+    in-out property <bool> column-dragging: false;
+    in-out property <length> column-drop-x: 0px;
+    in-out property <length> column-menu-x: 16px;
+    in-out property <length> column-menu-y: 88px;
+    property <length> column-menu-w: 200px;
+    property <length> column-menu-h: 316px;
+    in-out property <bool> menu-focus-pending: false;
     in-out property <[string]> gpu-names;
     in-out property <int> gpu-choice: -1;
     callback column-toggled(int);
-    callback column-moved(int, int);
-    callback column-dragged(int, length);
+    callback column-drag-preview(int, length);
+    callback column-drag-drop(int, length);
     callback resource-toggled(int);
     callback resource-moved(int, int);
     callback resource-resized(length);
@@ -1050,6 +1186,12 @@ export component AppWindow inherits Window {
     pure function any-resource() -> bool {
         root.resource-shown[0] || root.resource-shown[1] || root.resource-shown[2] || root.resource-shown[3] || root.resource-shown[4] || root.resource-shown[5] || root.resource-shown[6] || root.resource-shown[7] || root.resource-shown[8]
     }
+    function open-column-menu-at(abs-x: length, abs-y: length) {
+        root.column-menu-x = max(4px, min(abs-x - work.absolute-position.x, work.width - root.column-menu-w - 4px));
+        root.column-menu-y = max(4px, min(abs-y - work.absolute-position.y, work.height - root.column-menu-h - 4px));
+        root.column-menu-open = true;
+        root.menu-focus-pending = true;
+    }
 
 
     HorizontalLayout {
@@ -1069,7 +1211,10 @@ export component AppWindow inherits Window {
                     height: 36px;
                     accessible-role: button;
                     accessible-label: root.nav-expanded ? "ナビゲーションを折りたたむ" : "ナビゲーションを広げる";
-                    clicked => { root.nav-expanded = !root.nav-expanded; }
+                    clicked => {
+                        root.nav-expanded = !root.nav-expanded;
+                        root.nav-changed(root.nav-expanded);
+                    }
                     SideGlyph {
                         glyph: 0;
                         x: root.nav-expanded ? 18px : (parent.width - self.width) / 2;
@@ -1154,6 +1299,22 @@ export component AppWindow inherits Window {
 
                 ThemeSwitch { expanded: root.nav-expanded; }
 
+                if !root.nav-expanded: Rectangle {
+                    height: 18px;
+                    Text {
+                        x: 2px;
+                        width: parent.width - 4px;
+                        height: 100%;
+                        text: root.privilege-short;
+                        accessible-label: root.privilege-text;
+                        font-size: 9px;
+                        color: Theme.text-muted;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                }
+
                 if root.nav-expanded: Rectangle {
                     height: 16px;
                     Text {
@@ -1172,7 +1333,7 @@ export component AppWindow inherits Window {
                         x: 16px;
                         y: 0px;
                         width: parent.width - 24px;
-                        text: "通常のユーザー権限で動作";
+                        text: root.privilege-text;
                         font-size: 11px;
                         color: Theme.text-muted;
                         wrap: word-wrap;
@@ -1181,7 +1342,7 @@ export component AppWindow inherits Window {
             }
         }
 
-        Rectangle {
+        work := Rectangle {
             horizontal-stretch: 1;
             vertical-stretch: 1;
             min-width: 0px;
@@ -1211,31 +1372,6 @@ export component AppWindow inherits Window {
                         accessible-label: "DEMO DATA";
                     }
                     Rectangle { horizontal-stretch: 1; }
-                    column-menu-button := TouchArea {
-                        width: 72px;
-                        height: 28px;
-                        accessible-role: button;
-                        accessible-label: "列の表示";
-                        clicked => { root.column-menu-open = !root.column-menu-open; }
-                        Rectangle {
-                            width: 100%;
-                            height: 100%;
-                            border-radius: 6px;
-                            border-width: 1px;
-                            border-color: column-menu-button.has-hover ? Theme.accent : Theme.line;
-                            background: column-menu-button.pressed ? Theme.nav-pressed : Theme.card;
-                            Text {
-                                width: 100%;
-                                height: 100%;
-                                text: "列";
-                                font-size: 12px;
-                                font-weight: 600;
-                                color: Theme.text;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
-                        }
-                    }
                 }
                 Text {
                     text: root.status-text;
@@ -1243,15 +1379,8 @@ export component AppWindow inherits Window {
                     color: Theme.text-secondary;
                     wrap: word-wrap;
                 }
-                Text {
-                    text: "N/A は計測不能（権限不足や計測開始直後など）。未対応はこの版では未実装。0 や 0.0% は実測値です。";
-                    font-size: 12px;
-                    color: Theme.text-muted;
-                    wrap: word-wrap;
-                }
                 if root.warning-visible: Rectangle {
                     background: Theme.warn-bg;
-                    border-radius: 6px;
                     border-width: 1px;
                     border-color: Theme.warn-border;
                     height: 36px;
@@ -1268,10 +1397,7 @@ export component AppWindow inherits Window {
                 }
                 process-frame := Rectangle {
                     vertical-stretch: 1;
-                    background: Theme.card;
-                    border-radius: 8px;
-                    border-width: 1px;
-                    border-color: Theme.line;
+                    background: transparent;
                     clip: true;
                     property <length> bar: 14px;
 
@@ -1311,8 +1437,9 @@ export component AppWindow inherits Window {
                                         sort-clicked => { root.sort-requested(root.column-key(id)); }
                                         resized(next) => { Columns.set-width(id, next); }
                                         wheel-scrolled(dx, dy) => { process-frame.scroll-by(dx, dy); }
-                                        context-menu => { root.column-menu-open = true; }
-                                        dragged(dx) => { root.column-dragged(id, dx); }
+                                        context-menu(x, y) => { root.open-column-menu-at(x, y); }
+                                        drag-preview(x) => { root.column-drag-preview(id, x); }
+                                        drag-drop(x) => { root.column-drag-drop(id, x); }
                                     }
                                 }
                             }
@@ -1321,6 +1448,13 @@ export component AppWindow inherits Window {
                                 height: 1px;
                                 width: 100%;
                                 background: Theme.line;
+                            }
+                            if root.column-dragging: column-drop := Rectangle {
+                                x: process-list.content-x + root.column-drop-x - 1px;
+                                y: 4px;
+                                width: 2px;
+                                height: parent.height - 8px;
+                                background: Theme.accent;
                             }
                         }
 
@@ -1353,7 +1487,7 @@ export component AppWindow inherits Window {
                         }
                     }
 
-                    WinScrollBar {
+                    if process-list.content-height > process-list.visible-height + 1px: WinScrollBar {
                         horizontal: false;
                         x: parent.width - self.width;
                         y: 34px;
@@ -1363,7 +1497,7 @@ export component AppWindow inherits Window {
                         page-size: process-list.visible-height;
                         value <=> process-list.content-y;
                     }
-                    WinScrollBar {
+                    if process-list.content-width > process-list.visible-width + 1px: WinScrollBar {
                         horizontal: true;
                         x: 0px;
                         y: parent.height - self.height;
@@ -1374,13 +1508,37 @@ export component AppWindow inherits Window {
                         value <=> process-list.content-x;
                     }
                 }
+                menu-timer := Timer {
+                    interval: 32ms;
+                    running: root.open-column-menu;
+                    triggered => {
+                        root.open-column-menu-at(header-host.absolute-position.x + 4px, header-host.absolute-position.y + header-host.height);
+                        root.open-column-menu = false;
+                    }
+                }
             }
-            if root.page == 1: perf-page := Rectangle {
+            if root.page == 1: perf-page := VerticalLayout {
                 width: 100%;
                 height: 100%;
+                if root.warning-visible: Rectangle {
+                    height: 28px;
+                    background: Theme.warn-bg;
+                    border-width: 1px;
+                    border-color: Theme.warn-border;
+                    Text {
+                        x: 10px;
+                        width: parent.width - 20px;
+                        height: 100%;
+                        text: root.warning-text;
+                        vertical-alignment: center;
+                        font-size: 12px;
+                        color: Theme.warn-text;
+                        overflow: elide;
+                    }
+                }
                 perf-row := HorizontalLayout {
+                    vertical-stretch: 1;
                     width: 100%;
-                    height: 100%;
                     padding: 12px;
                     spacing: 0;
                     property <length> avail: self.width - 24px;
@@ -1388,8 +1546,8 @@ export component AppWindow inherits Window {
                         width: max(180px, min(root.resource-pref, max(180px, avail - 266px)));
                         horizontal-stretch: 0;
                         vertical-stretch: 1;
-                        VerticalLayout {
-                            spacing: 6px;
+                            VerticalLayout {
+                            spacing: 0px;
                             padding-right: 4px;
                             horizontal-stretch: 1;
                             HorizontalLayout {
@@ -1559,17 +1717,10 @@ export component AppWindow inherits Window {
                         vertical-stretch: 1;
                         min-width: 0px;
                         min-height: 0px;
-                        HorizontalLayout {
-                            spacing: 2px;
-                            detail-column := Rectangle {
-                                horizontal-stretch: 1;
-                                vertical-stretch: 1;
-                                min-width: 0px;
-                                min-height: 0px;
-                                background: Theme.card;
-                                border-radius: 8px;
-                                border-width: 1px;
-                                border-color: Theme.line;
+                        detail-column := Rectangle {
+                                width: 100%;
+                                height: 100%;
+                                background: transparent;
                                 clip: true;
                                 detail-flick := Flickable {
                                     width: 100%;
@@ -1590,7 +1741,7 @@ export component AppWindow inherits Window {
                                         detail-value := Text {
                                             text: root.detail-value;
                                             font-size: 28px;
-                                            font-weight: 600;
+                                            font-weight: 700;
                                             color: root.detail-kind == 3 ? Theme.unsupported : root.detail-kind == 2 ? Theme.unavailable : Theme.accent;
                                             wrap: word-wrap;
                                         }
@@ -1652,36 +1803,17 @@ export component AppWindow inherits Window {
                                                     }
                                                 }
                                             }
-                                            cpu-switch := TouchArea {
-                                                horizontal-stretch: 1;
-                                                accessible-role: button;
-                                                accessible-label: "詳細なCPU分析";
-                                                clicked => { root.cpu-detail-toggle(); }
-                                                Rectangle {
-                                                    width: 100%;
-                                                    height: 100%;
-                                                    border-radius: 6px;
-                                                    border-width: 1px;
-                                                    border-color: root.cpu-detail-on ? Theme.accent : Theme.line;
-                                                    background: root.cpu-detail-on ? Theme.nav-selected : Theme.chip;
-                                                    Text {
-                                                        width: 100%;
-                                                        height: 100%;
-                                                        text: root.cpu-detail-on ? "分析オン" : "分析オフ";
-                                                        font-size: 12px;
-                                                        font-weight: 600;
-                                                        color: root.cpu-detail-on ? Theme.accent-text : Theme.text-secondary;
-                                                        horizontal-alignment: center;
-                                                        vertical-alignment: center;
-                                                    }
-                                                }
+                                            analysis-switch := AnalysisSwitch {
+                                                on: root.cpu-detail-on;
+                                                toggled => { root.cpu-detail-toggle(); }
                                             }
                                         }
                                         if root.resource == 0 && root.cpu-diagnostics != "": Text {
                                             text: root.cpu-diagnostics;
                                             font-size: 11px;
                                             color: Theme.text-muted;
-                                            wrap: word-wrap;
+                                            wrap: no-wrap;
+                                            overflow: elide;
                                         }
                                         if root.cpu-admin && parent.width < 480px: VerticalLayout {
                                             spacing: 6px;
@@ -1772,12 +1904,22 @@ export component AppWindow inherits Window {
                                                 y: Math.floor(i / columns) * tile-h;
                                                 width: tile-w;
                                                 height: tile-h - 6px;
-                                                border-radius: 8px;
-                                                border-width: card.selected ? 2px : 1px;
-                                                border-color: card.selected ? Theme.accent : Theme.line;
-                                                background: Theme.card;
+                                                background: card.selected ? Theme.nav-selected : transparent;
                                                 clip: true;
                                                 property <bool> on-screen: self.absolute-position.y + self.height > detail-flick.absolute-position.y - 120px && self.absolute-position.y < detail-flick.absolute-position.y + detail-flick.height + 120px;
+                                                if card.selected: Rectangle {
+                                                    x: 0px;
+                                                    y: 0px;
+                                                    width: 2px;
+                                                    height: 100%;
+                                                    background: Theme.accent;
+                                                }
+                                                Rectangle {
+                                                    y: parent.height - 1px;
+                                                    width: 100%;
+                                                    height: 1px;
+                                                    background: Theme.line;
+                                                }
                                                 VerticalLayout {
                                                     padding: 4px;
                                                     spacing: 2px;
@@ -1808,10 +1950,14 @@ export component AppWindow inherits Window {
                                                         horizontal-stretch: 1;
                                                         min-width: 0px;
                                                         height: 64px;
-                                                        background: Theme.graph-plot;
-                                                        border-width: 1px;
-                                                        border-color: Theme.graph-border;
+                                                        background: transparent;
                                                         clip: true;
+                                                        Rectangle {
+                                                            y: parent.height - 1px;
+                                                            width: 100%;
+                                                            height: 1px;
+                                                            background: Theme.line;
+                                                        }
                                                         HorizontalLayout {
                                                             padding: 2px;
                                                             for dummy[index] in root.cpu-slots: Rectangle {
@@ -1991,34 +2137,20 @@ export component AppWindow inherits Window {
                                             color: Theme.text-secondary;
                                             wrap: word-wrap;
                                         }
-                                        Text {
-                                            text: "棒に触れると時刻と値だけを予告します。クリックするとその計測を固定し、上位 5 件はその記録だけから計算します。計測は続き、ライブに戻るまで選択は動きません。";
-                                            font-size: 12px;
-                                            color: Theme.text-muted;
-                                            wrap: word-wrap;
-                                        }
                                     }
                                 }
                             }
-                            WinScrollBar {
-                                horizontal: false;
-                                width: 14px;
-                                horizontal-stretch: 0;
-                                vertical-stretch: 1;
-                                maximum: max(0px, detail-flick.content-height - detail-flick.height);
-                                page-size: detail-flick.height;
-                                value <=> detail-flick.content-y;
-                            }
+                        if detail-flick.content-height > detail-flick.height + 1px: WinScrollBar {
+                            x: parent.width - self.width;
+                            y: 0px;
+                            width: 14px;
+                            height: 100%;
+                            horizontal: false;
+                            maximum: max(0px, detail-flick.content-height - detail-flick.height);
+                            page-size: detail-flick.height;
+                            value <=> detail-flick.content-y;
                         }
                     }
-                }
-            }
-            menu-timer := Timer {
-                interval: 32ms;
-                running: root.open-column-menu && root.page == 0;
-                triggered => {
-                    root.column-menu-open = true;
-                    root.open-column-menu = false;
                 }
             }
             resource-timer := Timer {
@@ -2029,53 +2161,60 @@ export component AppWindow inherits Window {
                     root.open-resource-menu = false;
                 }
             }
-            if root.column-menu-open && root.page == 0: Rectangle {
+            if root.column-menu-open && root.page == 0: column-menu-scope := FocusScope {
                 width: 100%;
                 height: 100%;
+                menu-focus := Timer {
+                    interval: 16ms;
+                    running: root.menu-focus-pending;
+                    triggered => {
+                        column-menu-scope.focus();
+                        root.menu-focus-pending = false;
+                    }
+                }
+                key-pressed(event) => {
+                    if (event.text == Key.Escape) {
+                        root.column-menu-open = false;
+                        accept
+                    } else {
+                        reject
+                    }
+                }
                 TouchArea {
                     width: 100%;
                     height: 100%;
                     clicked => { root.column-menu-open = false; }
                 }
                 column-menu := TouchArea {
-                    x: parent.width - 296px;
-                    y: 52px;
-                    width: 280px;
-                    height: 392px;
+                    x: root.column-menu-x;
+                    y: root.column-menu-y;
+                    width: root.column-menu-w;
+                    height: root.column-menu-h;
                     Rectangle {
+                        x: 0px;
+                        y: 0px;
                         width: 100%;
                         height: 100%;
                         background: Theme.card;
                         border-width: 1px;
                         border-color: Theme.line;
-                        border-radius: 8px;
-                        clip: true;
-                    VerticalLayout {
-                        width: 100%;
-                        padding: 8px;
-                        spacing: 2px;
-                        Text {
-                            text: "列の表示と順序";
+                        drop-shadow-blur: 16px;
+                        drop-shadow-offset-y: 4px;
+                        drop-shadow-color: #00000033;
+                        VerticalLayout {
                             width: 100%;
-                            height: 22px;
-                            font-size: 12px;
-                            font-weight: 600;
-                            color: Theme.text;
-                            overflow: elide;
-                            vertical-alignment: center;
+                            padding-top: 4px;
+                            padding-bottom: 4px;
+                            spacing: 0px;
+                            alignment: start;
+                            for id in Columns.order: ColumnCheck {
+                                width: 100%;
+                                label: root.column-label(id);
+                                checked: Columns.shown[id];
+                                locked: id == 0;
+                                toggled => { root.column-toggled(id); }
+                            }
                         }
-                        for id[index] in Columns.order: ArrangeRow {
-                            width: 100%;
-                            label: root.column-label(id);
-                            checked: Columns.shown[id];
-                            locked: id == 0;
-                            can-up: index > 0;
-                            can-down: index + 1 < Columns.order.length;
-                            toggled => { root.column-toggled(id); }
-                            up => { root.column-moved(id, -1); }
-                            down => { root.column-moved(id, 1); }
-                        }
-                    }
                     }
                 }
             }
@@ -2098,7 +2237,6 @@ export component AppWindow inherits Window {
                         background: Theme.card;
                         border-width: 1px;
                         border-color: Theme.line;
-                        border-radius: 8px;
                         clip: true;
                     VerticalLayout {
                         width: 100%;

@@ -54,6 +54,36 @@ pub fn apps_use_light_theme() -> Option<bool> {
     }
 }
 
+/// `TokenElevation.TokenIsElevated` for this process. `None` if the token cannot be read.
+#[cfg_attr(not(feature = "ui"), allow(dead_code))]
+pub fn token_is_elevated() -> Option<bool> {
+    use windows::Win32::Security::{
+        GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY,
+    };
+    use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    unsafe {
+        let mut token = HANDLE::default();
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token).is_err() {
+            return None;
+        }
+        let mut elevation = TOKEN_ELEVATION::default();
+        let mut returned = 0u32;
+        let result = GetTokenInformation(
+            token,
+            TokenElevation,
+            Some(std::ptr::addr_of_mut!(elevation).cast()),
+            u32::try_from(size_of::<TOKEN_ELEVATION>()).unwrap_or(4),
+            &mut returned,
+        );
+        let _ = CloseHandle(token);
+        if result.is_err() {
+            return None;
+        }
+        Some(elevation.TokenIsElevated != 0)
+    }
+}
+
 pub struct WindowsSystemProbe {
     last_memory_refresh: Option<Instant>,
     memory_cache: HashMap<ProcessKey, MetricValue<u64>>,
@@ -152,10 +182,7 @@ impl WindowsSystemProbe {
         }
 
         let warning = if self.private_working_set_unavailable {
-            Some(
-                "プライベートワーキングセットを取得できないため、プロセスメモリは N/A です。Windows 11 の更新状態を確認してください。"
-                    .to_string(),
-            )
+            Some("プロセスメモリは N/A です。".to_string())
         } else if denied > 0 {
             Some(format!(
                 "{denied} 件のプロセスは権限不足のため CPU またはメモリを計測できませんでした"

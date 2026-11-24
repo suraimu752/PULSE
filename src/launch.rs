@@ -239,7 +239,7 @@ fn parse_size(text: &str) -> Result<(f32, f32), String> {
 }
 
 fn help_text() -> String {
-    "[--size 1280x720] [--page process|performance] [--theme light|dark|system] [--resource cpu|memory|disk|network|gpu3d|gpu-encode|gpu-decode|vram|shared] [--select-history N] [--age-history 秒] [--cpu-view overall|logical] [--select-cpu N] [--cpu-detail on|off] [--menu columns|resources] [--hide-column disk] [--hide-resource gpu-encode] [--demo normal|many|gaps|special|history|cpus|cpus32|cpus-denied]\n--demo は mock feature 付きの開発ビルドだけが受け付けます。--select-history は 60 秒軸の棒を一度だけ固定します。--age-history はその点を固定したあと、モックの時計だけを進め、リングから外れた選択を残します。--cpu-view logical は論理プロセッサ別のグラフです。--cpu-detail は ETW の詳細分析です。列と資源の表示は %APPDATA%\\PULSE\\ui.cfg（Linux では ~/.config/PULSE/ui.cfg）に保存します。".to_string()
+    "[--size 1080x720] [--page process|performance] [--theme light|dark|system] [--resource cpu|memory|disk|network|gpu3d|gpu-encode|gpu-decode|vram|shared] [--select-history N] [--age-history 秒] [--cpu-view overall|logical] [--select-cpu N] [--cpu-detail on|off] [--menu columns|resources] [--hide-column disk] [--hide-resource gpu-encode] [--demo normal|many|gaps|special|history|cpus|cpus32|cpus-denied]\n--demo は mock feature 付きの開発ビルドだけが受け付けます。--size を省くと 1080x720 で開きます。--select-history は 60 秒軸の棒を一度だけ固定します。--age-history はその点を固定したあと、モックの時計だけを進め、リングから外れた選択を残します。--cpu-view logical は論理プロセッサ別のグラフです。--cpu-detail は ETW の詳細分析です。列と資源の表示、ナビの開閉は %APPDATA%\\PULSE\\ui.cfg（Linux では ~/.config/PULSE/ui.cfg）に保存します。`nav=` が無いファイルは折りたたみです。".to_string()
 }
 
 #[cfg(test)]

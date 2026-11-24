@@ -137,4 +137,4 @@ CPU ページの診断行は、分析のオンオフ、区間あたりのイベ�
 
 ## 権限で読めないもの
 
-保護されたプロセスや他ユーザーのプロセスは `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)` に失敗します。その行は一覧に残り、CPU とメモリは `N/A` です。管理者への昇格では埋めません。
+保護されたプロセスなど、`OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)` に失敗した行は一覧に残り、CPU とメモリは `N/A` です。リリースの `PULSE.exe` は起動前に管理者を求めますが、それでも開けない行を 0 や推定値にはしません。

@@ -420,4 +420,98 @@ mod tests {
         let age = newest.monotonic.saturating_duration_since(pinned.monotonic);
         assert_eq!(age, Duration::from_secs(70));
     }
+
+    /// Disk, network, and GPU failing must not drop the other processes' CPU.
+    #[test]
+    fn device_failures_leave_non_self_cpu_ranking_intact() {
+        struct ManyProbe {
+            ticks: u32,
+            start: Instant,
+        }
+        impl SystemProbe for ManyProbe {
+            fn probe(&mut self) -> RawSample {
+                self.ticks += 1;
+                let taken_at = self.start + Duration::from_millis(500 * u64::from(self.ticks - 1));
+                let mut sample = RawSample::empty(taken_at, SystemTime::UNIX_EPOCH);
+                sample.logical_processors = MetricValue::Value(8);
+                sample.system_total_100ns = MetricValue::Value(u64::from(self.ticks) * 80_000_000);
+                sample.system_busy_100ns = MetricValue::Value(u64::from(self.ticks) * 40_000_000);
+                sample.memory_total_bytes = MetricValue::Value(32 << 30);
+                sample.memory_available_bytes = MetricValue::Value(8 << 30);
+                for (pid, share) in [(100u32, 20u64), (200, 10), (300, 1)] {
+                    let mut process = RawProcess::new(pid, 1, format!("app-{pid}.exe"));
+                    process.creation_time_100ns = Some(u64::from(pid));
+                    process.cpu_time_100ns =
+                        MetricValue::Value(u64::from(self.ticks) * share * 1_000_000);
+                    process.memory_bytes = MetricValue::Value(1_000_000);
+                    sample.processes.push(process);
+                }
+                sample
+            }
+        }
+        struct Boom;
+        impl MetricEnricher for Boom {
+            fn id(&self) -> &'static str {
+                "boom"
+            }
+            fn enrich(&mut self, _sample: &mut RawSample) {
+                panic!("disk collector exploded");
+            }
+        }
+        struct FailingDevices;
+        impl MetricEnricher for FailingDevices {
+            fn id(&self) -> &'static str {
+                "devices"
+            }
+            fn enrich(&mut self, sample: &mut RawSample) {
+                sample.system_disk_read_bps = MetricValue::Unavailable;
+                sample.system_disk_write_bps = MetricValue::Unavailable;
+                sample.system_net_recv_bps = MetricValue::Unavailable;
+                sample.system_net_send_bps = MetricValue::Unavailable;
+                sample.system_gpu_3d_percent = MetricValue::Unavailable;
+                sample.system_gpu_encode_percent = MetricValue::Unavailable;
+                sample.system_gpu_decode_percent = MetricValue::Unavailable;
+                sample.system_vram_dedicated_bytes = MetricValue::Unavailable;
+                sample.system_vram_shared_bytes = MetricValue::Unavailable;
+                for process in &mut sample.processes {
+                    process.disk_read_bytes = MetricValue::Unavailable;
+                    process.disk_write_bytes = MetricValue::Unavailable;
+                    process.gpu_3d_percent = MetricValue::Unavailable;
+                    process.vram_dedicated_bytes = MetricValue::Unavailable;
+                    process.vram_shared_bytes = MetricValue::Unavailable;
+                }
+            }
+        }
+
+        let mut core = SamplerCore::new(
+            Box::new(ManyProbe {
+                ticks: 0,
+                start: Instant::now(),
+            }),
+            vec![Box::new(Boom), Box::new(FailingDevices)],
+        );
+        core.tick();
+        let mut published = core.tick();
+        for _ in 0..40 {
+            published = core.tick();
+        }
+        assert_eq!(published.snapshot.processes.len(), 3);
+        assert_eq!(published.snapshot.cpu_percent, MetricValue::Value(50.0));
+        assert_eq!(published.snapshot.disk_read_bps, MetricValue::Unavailable);
+        assert!(published
+            .snapshot
+            .warning
+            .as_deref()
+            .is_some_and(|text| text.contains("boom failed")));
+        let crate::rank::RankStatus::Ranked(rows) =
+            crate::rank::rank(&published.snapshot, crate::model::ResourceId::Cpu, None, 5)
+        else {
+            panic!("cpu rank");
+        };
+        assert_eq!(
+            rows.iter().map(|row| row.pid).collect::<Vec<_>>(),
+            vec![100, 200, 300]
+        );
+        assert!(rows.iter().all(|row| row.value != "N/A"));
+    }
 }
