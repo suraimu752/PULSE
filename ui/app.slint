@@ -38,9 +38,10 @@ export global Theme {
     out property <color> graph-bar: dark ? #8fd9c4 : #0c6b52;
     // The track stays visible against the card when the thumb is hidden.
     out property <color> scroll-track: dark ? #2a3530 : #e6e1d6;
-    out property <color> scroll-thumb: dark ? #b7c4bc : #6e675c;
-    out property <color> scroll-thumb-hover: dark ? #d5e0da : #4e483f;
-    out property <color> scroll-thumb-pressed: dark ? #eef5f1 : #2e2a24;
+    // Dark thumb stays in the instrument greens. The old #b7c4bc read as a white bar.
+    out property <color> scroll-thumb: dark ? #6e8b7e : #6e675c;
+    out property <color> scroll-thumb-hover: dark ? #8fd9c4 : #4e483f;
+    out property <color> scroll-thumb-pressed: dark ? #d7f3ea : #2e2a24;
     out property <color> grip: dark ? #4a5c54 : #c9c2b4;
     out property <color> chip: dark ? #1c2622 : #fffcf8;
 }
@@ -407,10 +408,10 @@ component WinScrollBar inherits Rectangle {
 
     thumb := Rectangle {
         visible: root.overflow;
-        x: root.horizontal ? root.thumb-pos + 2px : 3px;
-        y: root.horizontal ? 3px : root.thumb-pos + 2px;
-        width: root.horizontal ? max(0px, root.thumb-len - 4px) : 8px;
-        height: root.horizontal ? 8px : max(0px, root.thumb-len - 4px);
+        x: root.horizontal ? root.thumb-pos + 2px : 4px;
+        y: root.horizontal ? 4px : root.thumb-pos + 2px;
+        width: root.horizontal ? max(0px, root.thumb-len - 4px) : 6px;
+        height: root.horizontal ? 6px : max(0px, root.thumb-len - 4px);
         border-radius: 4px;
         background: root.thumb-color;
     }
@@ -1051,6 +1052,7 @@ export component AppWindow inherits Window {
     in-out property <string> detail-extra: "";
     in-out property <string> detail-note: "";
     in-out property <string> privilege-text: "権限は未判定";
+    in-out property <string> privilege-short: "未判定";
     in-out property <bool> detail-graph: false;
     in-out property <bool> demo: false;
     in-out property <int> history-cursor: -1;
@@ -1297,6 +1299,22 @@ export component AppWindow inherits Window {
 
                 ThemeSwitch { expanded: root.nav-expanded; }
 
+                if !root.nav-expanded: Rectangle {
+                    height: 18px;
+                    Text {
+                        x: 2px;
+                        width: parent.width - 4px;
+                        height: 100%;
+                        text: root.privilege-short;
+                        accessible-label: root.privilege-text;
+                        font-size: 9px;
+                        color: Theme.text-muted;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                }
+
                 if root.nav-expanded: Rectangle {
                     height: 16px;
                     Text {
@@ -1499,12 +1517,28 @@ export component AppWindow inherits Window {
                     }
                 }
             }
-            if root.page == 1: perf-page := Rectangle {
+            if root.page == 1: perf-page := VerticalLayout {
                 width: 100%;
                 height: 100%;
+                if root.warning-visible: Rectangle {
+                    height: 28px;
+                    background: Theme.warn-bg;
+                    border-width: 1px;
+                    border-color: Theme.warn-border;
+                    Text {
+                        x: 10px;
+                        width: parent.width - 20px;
+                        height: 100%;
+                        text: root.warning-text;
+                        vertical-alignment: center;
+                        font-size: 12px;
+                        color: Theme.warn-text;
+                        overflow: elide;
+                    }
+                }
                 perf-row := HorizontalLayout {
+                    vertical-stretch: 1;
                     width: 100%;
-                    height: 100%;
                     padding: 12px;
                     spacing: 0;
                     property <length> avail: self.width - 24px;

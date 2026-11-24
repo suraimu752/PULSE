@@ -272,6 +272,24 @@ mod tests {
     }
 
     #[test]
+    fn a_small_self_row_does_not_hide_other_real_cpu() {
+        let snapshot = snap(vec![
+            cpu_row(18556, 1, "PULSE.exe", MetricValue::Value(0.3)),
+            cpu_row(4, 1, "System", MetricValue::Value(12.0)),
+            cpu_row(900, 1, "busy.exe", MetricValue::Value(40.0)),
+            cpu_row(901, 1, "denied.exe", MetricValue::Unavailable),
+        ]);
+        let RankStatus::Ranked(rows) = rank(&snapshot, ResourceId::Cpu, None, 5) else {
+            panic!("rows");
+        };
+        assert_eq!(
+            rows.iter().map(|row| row.name.as_str()).collect::<Vec<_>>(),
+            vec!["busy.exe", "System", "PULSE.exe"]
+        );
+        assert_eq!(snapshot.processes.len(), 4);
+    }
+
+    #[test]
     fn fewer_than_five_real_values_are_not_padded() {
         let snapshot = snap(vec![
             cpu_row(1, 1, "only", MetricValue::Value(3.0)),

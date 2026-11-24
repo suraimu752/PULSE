@@ -98,6 +98,16 @@ pub fn privilege_label() -> &'static str {
     }
 }
 
+/// Short form that still fits the collapsed navigation rail.
+#[cfg_attr(not(feature = "ui"), allow(dead_code))]
+pub fn privilege_short() -> &'static str {
+    match privilege_state() {
+        Some(true) => "管理者",
+        Some(false) => "通常",
+        None => "未判定",
+    }
+}
+
 fn privilege_state() -> Option<bool> {
     #[cfg(windows)]
     {

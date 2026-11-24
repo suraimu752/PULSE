@@ -71,6 +71,7 @@ pub fn run(options: LaunchOptions) -> Result<(), String> {
     let ui = AppWindow::new().map_err(|err| format!("ウィンドウを作成できませんでした: {err}"))?;
     ui.set_version_text(format!("PULSE {}", env!("CARGO_PKG_VERSION")).into());
     ui.set_privilege_text(crate::platform::privilege_label().into());
+    ui.set_privilege_short(crate::platform::privilege_short().into());
     ui.set_page(options.page);
     if let Some(resource) = options.resource {
         ui.set_resource(resource);

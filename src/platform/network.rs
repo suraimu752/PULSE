@@ -49,8 +49,8 @@ impl MetricEnricher for NetworkEnricher {
                 sample.system_net_recv_bps = MetricValue::Unavailable;
                 sample.system_net_send_bps = MetricValue::Unavailable;
                 sample.adapters.clear();
-                self.previous.clear();
-                self.previous_at = None;
+                // Keep the last octet counters. The next successful read can
+                // still form a rate instead of staying N/A for an extra interval.
                 return;
             }
         };
@@ -108,7 +108,13 @@ fn read_adapters() -> Result<Vec<AdapterRow>, u32> {
     unsafe {
         let mut table = std::ptr::null_mut();
         let status = GetIfTable2(&mut table);
-        if status.0 != 0 || table.is_null() {
+        if status.0 != 0 {
+            if !table.is_null() {
+                FreeMibTable(table.cast());
+            }
+            return Err(status.0);
+        }
+        if table.is_null() {
             return Err(status.0);
         }
         let count = (*table).NumEntries as usize;

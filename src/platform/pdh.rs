@@ -5,9 +5,11 @@ use std::cell::Cell;
 
 use windows::Win32::System::Performance::{
     PdhAddEnglishCounterW, PdhCloseQuery, PdhCollectQueryData, PdhGetFormattedCounterArrayW,
-    PdhGetFormattedCounterValue, PdhOpenQueryW, PDH_CSTATUS_NEW_DATA, PDH_CSTATUS_VALID_DATA,
-    PDH_FMT_COUNTERVALUE, PDH_FMT_COUNTERVALUE_ITEM_W, PDH_FMT_DOUBLE, PDH_HCOUNTER, PDH_HQUERY,
-    PDH_MORE_DATA, PDH_NO_DATA,
+    PdhGetFormattedCounterValue, PdhOpenQueryW, PDH_CALC_NEGATIVE_DENOMINATOR,
+    PDH_CALC_NEGATIVE_TIMEBASE, PDH_CALC_NEGATIVE_VALUE, PDH_CSTATUS_INVALID_DATA,
+    PDH_CSTATUS_NEW_DATA, PDH_CSTATUS_NO_INSTANCE, PDH_CSTATUS_VALID_DATA, PDH_FMT_COUNTERVALUE,
+    PDH_FMT_COUNTERVALUE_ITEM_W, PDH_FMT_DOUBLE,
+    PDH_HCOUNTER, PDH_HQUERY, PDH_INVALID_DATA, PDH_MORE_DATA, PDH_NO_DATA,
 };
 
 pub enum PdhSample {
@@ -21,6 +23,8 @@ pub struct PdhQuery {
     query: PDH_HQUERY,
     counter: PDH_HCOUNTER,
     last_status: Cell<u32>,
+    /// Consecutive hard failures. A transient miss does not increment this.
+    hard_failures: Cell<u32>,
 }
 
 // The sampler moves each enricher onto one worker thread and never shares the
@@ -52,6 +56,7 @@ impl PdhQuery {
                 query,
                 counter,
                 last_status: Cell::new(0),
+                hard_failures: Cell::new(0),
             })
         }
     }
@@ -60,17 +65,21 @@ impl PdhQuery {
         self.last_status.get()
     }
 
+    /// True after several hard failures in a row. Callers then drop this query
+    /// and open a new one. One bad sample is not enough: reopening loses the
+    /// primed baseline and turns the next interval into `N/A` as well.
+    pub fn should_reopen(&self) -> bool {
+        self.hard_failures.get() >= 3
+    }
+
     pub fn collect(&self) -> Option<PdhSample> {
         unsafe {
             let status = PdhCollectQueryData(self.query);
-            if status == PDH_NO_DATA {
-                return Some(PdhSample::NoData);
+            match note_status(self, status) {
+                CollectStep::Continue => self.read_array(),
+                CollectStep::NoData => Some(PdhSample::NoData),
+                CollectStep::Failed => None,
             }
-            if status != 0 && status != PDH_CSTATUS_NEW_DATA && status != PDH_CSTATUS_VALID_DATA {
-                self.last_status.set(status);
-                return None;
-            }
-            self.read_array()
         }
     }
 
@@ -85,8 +94,10 @@ impl PdhQuery {
                 &mut count,
                 None,
             );
-            if probe == PDH_NO_DATA {
-                return Some(PdhSample::NoData);
+            match note_status(self, probe) {
+                CollectStep::NoData => return Some(PdhSample::NoData),
+                CollectStep::Failed => return None,
+                CollectStep::Continue => {}
             }
             if probe != 0 && probe != PDH_MORE_DATA {
                 return self.collect_single();
@@ -117,12 +128,10 @@ impl PdhQuery {
                 if status == PDH_MORE_DATA {
                     continue;
                 }
-                if status == PDH_NO_DATA {
-                    return Some(PdhSample::NoData);
-                }
-                if status != 0 {
-                    self.last_status.set(status);
-                    return None;
+                match note_status(self, status) {
+                    CollectStep::NoData => return Some(PdhSample::NoData),
+                    CollectStep::Failed => return None,
+                    CollectStep::Continue => {}
                 }
                 let mut values = Vec::new();
                 for item in items.iter().take(count as usize) {
@@ -146,12 +155,18 @@ impl PdhQuery {
             let mut value = PDH_FMT_COUNTERVALUE::default();
             let status =
                 PdhGetFormattedCounterValue(self.counter, PDH_FMT_DOUBLE, None, &mut value);
-            if status == PDH_NO_DATA {
-                return Some(PdhSample::NoData);
+            match note_status(self, status) {
+                CollectStep::NoData => return Some(PdhSample::NoData),
+                CollectStep::Failed => return None,
+                CollectStep::Continue => {}
             }
-            if status != 0 || !status_ok(value.CStatus) {
-                self.last_status.set(status);
-                return None;
+            if !status_ok(value.CStatus) {
+                match note_status(self, value.CStatus) {
+                    CollectStep::Continue | CollectStep::NoData => {
+                        return Some(PdhSample::NoData);
+                    }
+                    CollectStep::Failed => return None,
+                }
             }
             let number = value.Anonymous.doubleValue;
             if number.is_finite() && number >= 0.0 {
@@ -178,6 +193,44 @@ fn status_ok(status: u32) -> bool {
     status == PDH_CSTATUS_VALID_DATA || status == PDH_CSTATUS_NEW_DATA
 }
 
+enum CollectStep {
+    Continue,
+    /// The query is still usable. This interval has no number.
+    NoData,
+    /// Counted toward [`PdhQuery::should_reopen`].
+    Failed,
+}
+
+fn note_status(query: &PdhQuery, status: u32) -> CollectStep {
+    if status == 0 || status == PDH_CSTATUS_VALID_DATA || status == PDH_CSTATUS_NEW_DATA {
+        query.hard_failures.set(0);
+        return CollectStep::Continue;
+    }
+    if status == PDH_MORE_DATA {
+        return CollectStep::Continue;
+    }
+    query.last_status.set(status);
+    if keeps_query(status) {
+        CollectStep::NoData
+    } else {
+        query
+            .hard_failures
+            .set(query.hard_failures.get().saturating_add(1));
+        CollectStep::Failed
+    }
+}
+
+/// Statuses that mean "not this interval", not "the query is dead".
+fn keeps_query(status: u32) -> bool {
+    status == PDH_NO_DATA
+        || status == PDH_INVALID_DATA
+        || status == PDH_CSTATUS_INVALID_DATA
+        || status == PDH_CSTATUS_NO_INSTANCE
+        || status == PDH_CALC_NEGATIVE_DENOMINATOR
+        || status == PDH_CALC_NEGATIVE_TIMEBASE
+        || status == PDH_CALC_NEGATIVE_VALUE
+}
+
 fn wide_string(pointer: windows::core::PWSTR) -> String {
     if pointer.0.is_null() {
         return String::new();
@@ -188,5 +241,25 @@ fn wide_string(pointer: windows::core::PWSTR) -> String {
             len += 1;
         }
         String::from_utf16_lossy(std::slice::from_raw_parts(pointer.0, len))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::keeps_query;
+    use windows::Win32::System::Performance::{
+        PDH_CALC_NEGATIVE_VALUE, PDH_CSTATUS_INVALID_DATA, PDH_CSTATUS_NO_COUNTER,
+        PDH_CSTATUS_NO_INSTANCE, PDH_CSTATUS_NO_OBJECT, PDH_INVALID_DATA, PDH_NO_DATA,
+    };
+
+    #[test]
+    fn transient_pdh_statuses_keep_the_query() {
+        assert!(keeps_query(PDH_NO_DATA));
+        assert!(keeps_query(PDH_INVALID_DATA));
+        assert!(keeps_query(PDH_CSTATUS_INVALID_DATA));
+        assert!(keeps_query(PDH_CSTATUS_NO_INSTANCE));
+        assert!(keeps_query(PDH_CALC_NEGATIVE_VALUE));
+        assert!(!keeps_query(PDH_CSTATUS_NO_OBJECT));
+        assert!(!keeps_query(PDH_CSTATUS_NO_COUNTER));
     }
 }
