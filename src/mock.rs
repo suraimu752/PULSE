@@ -39,6 +39,8 @@ pub enum Scenario {
     FiveHundred,
     /// Two thousand processes, for the upper list-size check.
     TwoThousand,
+    /// Many virtual adapters, including filter bindings that must not be summed.
+    Nics,
 }
 
 impl Scenario {
@@ -54,6 +56,7 @@ impl Scenario {
             "cpus-denied" => Some(Self::CpusDenied),
             "p500" => Some(Self::FiveHundred),
             "p2000" => Some(Self::TwoThousand),
+            "nics" => Some(Self::Nics),
             _ => None,
         }
     }
@@ -233,6 +236,23 @@ impl SystemProbe for MockProbe {
         }
 
         fill_devices(&mut sample, self.scenario, step);
+        if self.scenario == Scenario::Nics {
+            // The count is scripted so the quiet banner can be laid out.
+            // It is not a measurement of this process.
+            sample.process_net = ProcessNetMode::Unimplemented;
+            for process in &mut sample.processes {
+                process.net_send_bytes = MetricValue::Unsupported;
+                process.net_recv_bytes = MetricValue::Unsupported;
+            }
+            if let Some(note) = crate::accessnote::access_warning(crate::accessnote::AccessCounts {
+                needs_admin: 0,
+                protected: 12,
+                other: 0,
+            }) {
+                sample.warning = Some(note.text);
+                sample.warning_quiet = note.quiet;
+            }
+        }
         if let Some(count) = cpu_count(self.scenario) {
             sample.logical_processors = MetricValue::Value(u32::from(count));
             sample.cpu_detail = script_cpus(
@@ -261,7 +281,16 @@ fn advance(slot: &mut u64, delta: u64, reading: Reading) -> MetricValue<u64> {
 fn fill_devices(sample: &mut RawSample, scenario: Scenario, step: u64) {
     let physical_read = physical_disk_read(step);
     let physical_write = physical_read * 0.35;
-    let (disks, adapters, gpus) = match scenario {
+    let (disks, adapters, gpus, net_total) = match scenario {
+        Scenario::Nics => {
+            let (adapters, recv, send) = nics_visible(step);
+            (
+                vec![named("ディスク 0", physical_read, physical_write)],
+                adapters,
+                vec![adapter_gpu(0x11, "GPU 0", 1.0, step)],
+                Some((recv, send)),
+            )
+        }
         Scenario::Special | Scenario::History => (
             vec![
                 named("ディスク 0", physical_read * 0.7, physical_write * 0.7),
@@ -279,6 +308,7 @@ fn fill_devices(sample: &mut RawSample, scenario: Scenario, step: u64) {
                 adapter_gpu(0x11, "GPU 0", 0.7, step),
                 adapter_gpu(0x22, "GPU 1", 0.4, step),
             ],
+            None,
         ),
         _ => (
             vec![named("ディスク 0", physical_read, physical_write)],
@@ -288,12 +318,14 @@ fn fill_devices(sample: &mut RawSample, scenario: Scenario, step: u64) {
                 adapter_send(step),
             )],
             vec![adapter_gpu(0x11, "GPU 0", 1.0, step)],
+            None,
         ),
     };
     sample.system_disk_read_bps = MetricValue::Value(physical_read);
     sample.system_disk_write_bps = MetricValue::Value(physical_write);
-    sample.system_net_recv_bps = MetricValue::Value(adapter_recv(step));
-    sample.system_net_send_bps = MetricValue::Value(adapter_send(step));
+    let (recv, send) = net_total.unwrap_or_else(|| (adapter_recv(step), adapter_send(step)));
+    sample.system_net_recv_bps = MetricValue::Value(recv);
+    sample.system_net_send_bps = MetricValue::Value(send);
     sample.disks = disks;
     sample.adapters = adapters;
     sample.gpus = gpus;
@@ -317,6 +349,159 @@ fn named(name: &str, read: f64, write: f64) -> NamedRate {
         read_bps: MetricValue::Value(read),
         write_bps: MetricValue::Value(write),
     }
+}
+
+/// The same keep/drop function as Windows. Filter rows repeat the base
+/// octets and must not appear in the list or the total. A down virtual
+/// adapter is hidden. An up adapter at 0 B/s stays, as a real zero.
+fn nics_visible(step: u64) -> (Vec<NamedRate>, f64, f64) {
+    use crate::netadapter::{select_adapters, AdapterCandidate};
+    let recv = adapter_recv(step);
+    let send = adapter_send(step);
+    let candidate = |index: u32,
+                     name: &str,
+                     in_octets: u64,
+                     out_octets: u64,
+                     filter: bool,
+                     hardware: bool,
+                     endpoint: bool,
+                     loopback: bool,
+                     oper_up: bool| {
+        AdapterCandidate {
+            index,
+            name: name.to_string(),
+            in_octets,
+            out_octets,
+            filter,
+            hardware,
+            endpoint,
+            loopback,
+            oper_up,
+        }
+    };
+    let rows = vec![
+        candidate(
+            1,
+            "イーサネット",
+            1_000_000,
+            400_000,
+            false,
+            true,
+            true,
+            false,
+            true,
+        ),
+        candidate(
+            2,
+            "イーサネット-WFP Native MAC Layer LightWeight Filter-0000",
+            1_000_000,
+            400_000,
+            true,
+            false,
+            false,
+            false,
+            true,
+        ),
+        candidate(
+            3,
+            "イーサネット-QoS Packet Scheduler-0000",
+            1_000_000,
+            400_000,
+            true,
+            false,
+            false,
+            false,
+            true,
+        ),
+        candidate(
+            4,
+            "イーサネット-WFP 802.3 MAC Layer LightWeight Filter-0000",
+            1_000_000,
+            400_000,
+            true,
+            false,
+            false,
+            false,
+            true,
+        ),
+        candidate(
+            5,
+            "vSwitch (WSL (Hyper-V firewall))-Virtual Switch Extension Filter-0000",
+            20,
+            20,
+            true,
+            false,
+            false,
+            false,
+            true,
+        ),
+        candidate(
+            6,
+            "vEthernet (WSL (Hyper-V firewall))",
+            0,
+            0,
+            false,
+            false,
+            true,
+            false,
+            true,
+        ),
+        candidate(
+            7,
+            "vEthernet (Default Switch)",
+            100,
+            40,
+            false,
+            false,
+            true,
+            false,
+            true,
+        ),
+        candidate(
+            8,
+            "ローカル エリア接続* 6",
+            0,
+            0,
+            false,
+            false,
+            true,
+            false,
+            false,
+        ),
+        candidate(9, "Tailscale", 250, 80, false, false, true, false, true),
+        candidate(
+            10,
+            "Loopback Pseudo-Interface 1",
+            9_000_000,
+            9_000_000,
+            false,
+            false,
+            false,
+            true,
+            true,
+        ),
+    ];
+    let kept = select_adapters(&rows);
+    let share = |name: &str| match name {
+        "イーサネット" => (0.70, 0.70),
+        "vEthernet (Default Switch)" => (0.05, 0.05),
+        "Tailscale" => (0.25, 0.25),
+        _ => (0.0, 0.0),
+    };
+    let mut total_recv = 0.0;
+    let mut total_send = 0.0;
+    let adapters = kept
+        .into_iter()
+        .map(|row| {
+            let (recv_share, send_share) = share(&row.name);
+            let read = recv * recv_share;
+            let write = send * send_share;
+            total_recv += read;
+            total_send += write;
+            named(&row.name, read, write)
+        })
+        .collect();
+    (adapters, total_recv, total_send)
 }
 
 fn adapter_gpu(luid: u64, name: &str, scale: f64, step: u64) -> GpuAdapter {
@@ -433,6 +618,7 @@ fn actors(scenario: Scenario) -> Vec<Actor> {
         Scenario::Special => special(),
         Scenario::History => history_cast(),
         Scenario::Cpus | Scenario::Cpus32 | Scenario::CpusDenied => crowd(24, false),
+        Scenario::Nics => crowd(40, false),
     }
 }
 
@@ -812,6 +998,56 @@ mod tests {
             .processes
             .iter()
             .all(|process| process.name != "reused-after.exe"));
+    }
+
+    #[test]
+    fn nics_drop_filter_duplicates_and_keep_a_real_zero() {
+        let mut probe = MockProbe::new(Scenario::Nics);
+        let sample = probe.probe();
+        let names: Vec<&str> = sample
+            .adapters
+            .iter()
+            .map(|row| row.name.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "イーサネット",
+                "Tailscale",
+                "vEthernet (Default Switch)",
+                "vEthernet (WSL (Hyper-V firewall))",
+            ]
+        );
+        assert!(sample
+            .adapters
+            .iter()
+            .all(|row| !row.name.contains("Filter") && !row.name.contains("QoS")));
+        let idle = sample
+            .adapters
+            .iter()
+            .find(|row| row.name.contains("WSL"))
+            .expect("wsl");
+        assert_eq!(idle.read_bps, MetricValue::Value(0.0));
+        assert_eq!(idle.write_bps, MetricValue::Value(0.0));
+        let summed = sample.adapters.iter().fold(0.0, |total, row| {
+            total
+                + match row.read_bps {
+                    MetricValue::Value(value) => value,
+                    _ => panic!("adapter rate"),
+                }
+        });
+        assert_eq!(sample.system_net_recv_bps, MetricValue::Value(summed));
+        assert!(summed > 0.0);
+        assert_eq!(sample.process_net, ProcessNetMode::Unimplemented);
+        assert!(sample
+            .processes
+            .iter()
+            .all(|process| process.net_recv_bytes == MetricValue::Unsupported));
+        assert!(sample.warning_quiet);
+        let warning = sample.warning.expect("quiet notice");
+        assert!(warning.contains("保護"));
+        assert!(warning.contains("12"));
+        assert!(!warning.contains("権限不足"));
     }
 
     #[test]

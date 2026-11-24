@@ -3,6 +3,7 @@
 //! Phase 1 splits the program into a sampler thread and a Slint UI thread.
 //! Collectors publish aggregated snapshots; the UI never calls Windows APIs.
 
+mod accessnote;
 mod aggregate;
 mod collector;
 mod config;
@@ -17,6 +18,7 @@ mod metric;
 mod mock;
 mod model;
 mod names;
+mod netadapter;
 #[cfg(any(test, feature = "ui"))]
 mod pick;
 mod platform;

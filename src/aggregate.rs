@@ -63,6 +63,7 @@ pub fn aggregate(
         gpu_presence: current.gpu_presence,
         processes,
         warning: current.warning.clone(),
+        warning_quiet: current.warning_quiet,
         cpu_detail: current.cpu_detail.clone(),
     }
 }

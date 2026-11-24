@@ -1,8 +1,9 @@
-//! Adapter throughput for a normal user, and no per-process attribution.
+//! Adapter throughput, and no per-process attribution.
 //!
-//! `GetIfTable2` does not need elevation. Kernel ETW that would assign packets
-//! to a PID usually does, so process cells stay unavailable and the UI says
-//! 要管理者. Adapter bytes are not copied into those cells.
+//! `GetIfTable2` does not need elevation. Per-process attribution is not
+//! implemented, so process cells are `未対応` rather than `要管理者`.
+//! Filter interfaces are dropped before the total: they repeat the base
+//! adapter. `InOctets` is receive and `OutOctets` is send.
 
 use std::collections::HashMap;
 use std::time::Instant;
@@ -16,6 +17,7 @@ use crate::collector::MetricEnricher;
 use crate::devices::sum_side;
 use crate::metric::MetricValue;
 use crate::model::{NamedRate, ProcessNetMode, RawSample};
+use crate::netadapter::{if_row_flags, select_adapters, AdapterCandidate};
 
 pub struct NetworkEnricher {
     previous: HashMap<u32, (u64, u64)>,
@@ -37,10 +39,10 @@ impl MetricEnricher for NetworkEnricher {
     }
 
     fn enrich(&mut self, sample: &mut RawSample) {
-        sample.process_net = ProcessNetMode::NeedsAdmin;
+        sample.process_net = ProcessNetMode::Unimplemented;
         for process in &mut sample.processes {
-            process.net_send_bytes = MetricValue::Unavailable;
-            process.net_recv_bytes = MetricValue::Unavailable;
+            process.net_send_bytes = MetricValue::Unsupported;
+            process.net_recv_bytes = MetricValue::Unsupported;
         }
         let rows = match read_adapters() {
             Ok(rows) => rows,
@@ -119,32 +121,31 @@ fn read_adapters() -> Result<Vec<AdapterRow>, u32> {
         }
         let count = (*table).NumEntries as usize;
         let rows = std::slice::from_raw_parts((*table).Table.as_ptr(), count);
-        let mut up = Vec::new();
-        let mut rest = Vec::new();
+        let mut candidates = Vec::with_capacity(count);
         for row in rows {
-            if row.Type == MIB_IF_TYPE_LOOPBACK {
-                continue;
-            }
-            let adapter = AdapterRow {
+            let flags = if_row_flags(row.InterfaceAndOperStatusFlags._bitfield);
+            candidates.push(AdapterCandidate {
                 index: row.InterfaceIndex,
                 name: alias(&row.Alias),
-                recv: row.InOctets,
-                send: row.OutOctets,
-            };
-            if row.OperStatus == IfOperStatusUp {
-                up.push(adapter);
-            } else {
-                rest.push(adapter);
-            }
+                in_octets: row.InOctets,
+                out_octets: row.OutOctets,
+                filter: flags.filter,
+                hardware: flags.hardware,
+                endpoint: flags.endpoint,
+                loopback: row.Type == MIB_IF_TYPE_LOOPBACK,
+                oper_up: row.OperStatus == IfOperStatusUp,
+            });
         }
         FreeMibTable(table.cast());
-        // An OperStatus the headers don't name used to drop every adapter and
-        // the card stayed N/A. Keep the non-loopback rows in that case.
-        if up.is_empty() {
-            Ok(rest)
-        } else {
-            Ok(up)
-        }
+        Ok(select_adapters(&candidates)
+            .into_iter()
+            .map(|row| AdapterRow {
+                index: row.index,
+                name: row.name,
+                recv: row.recv_octets,
+                send: row.send_octets,
+            })
+            .collect())
     }
 }
 

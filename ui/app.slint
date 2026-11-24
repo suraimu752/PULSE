@@ -56,6 +56,91 @@ export struct TopRow {
     kind: int,
 }
 
+export struct AdapterLine {
+    name: string,
+    recv: string,
+    send: string,
+}
+
+component NoticeBanner inherits Rectangle {
+    in property <string> text;
+    in property <bool> quiet: false;
+    height: root.quiet ? 22px : 28px;
+    background: root.quiet ? transparent : Theme.warn-bg;
+    border-width: root.quiet ? 0px : 1px;
+    border-color: Theme.warn-border;
+    Text {
+        x: root.quiet ? 0px : 10px;
+        width: parent.width - (root.quiet ? 0px : 20px);
+        height: 100%;
+        text: root.text;
+        vertical-alignment: center;
+        font-size: 12px;
+        color: root.quiet ? Theme.text-muted : Theme.warn-text;
+        overflow: elide;
+    }
+}
+
+component AdapterTable inherits VerticalLayout {
+    in property <[AdapterLine]> rows;
+    spacing: 2px;
+    HorizontalLayout {
+        spacing: 8px;
+        height: 18px;
+        Text {
+            text: "アダプター";
+            font-size: 11px;
+            color: Theme.text-muted;
+            horizontal-stretch: 1;
+            overflow: elide;
+        }
+        Text {
+            text: "受信";
+            font-size: 11px;
+            color: Theme.text-muted;
+            width: 88px;
+            horizontal-alignment: right;
+        }
+        Text {
+            text: "送信";
+            font-size: 11px;
+            color: Theme.text-muted;
+            width: 88px;
+            horizontal-alignment: right;
+        }
+    }
+    for row in root.rows: HorizontalLayout {
+        spacing: 8px;
+        height: 22px;
+        Text {
+            text: row.name;
+            font-size: 13px;
+            color: Theme.text;
+            horizontal-stretch: 1;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+        Text {
+            text: row.recv;
+            font-size: 13px;
+            width: 88px;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+            color: row.recv == "N/A" ? Theme.unavailable : row.recv == "未対応" ? Theme.unsupported : Theme.text;
+            overflow: elide;
+        }
+        Text {
+            text: row.send;
+            font-size: 13px;
+            width: 88px;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+            color: row.send == "N/A" ? Theme.unavailable : row.send == "未対応" ? Theme.unsupported : Theme.text;
+            overflow: elide;
+        }
+    }
+}
+
 component RankCells inherits HorizontalLayout {
     in property <string> rank;
     in property <string> name;
@@ -620,6 +705,8 @@ component ResourceButton inherits TouchArea {
     in property <int> kind;
     in property <bool> active;
     in property <[float]> spark;
+    in property <string> value-b: "";
+    property <bool> stacked: root.value-b != "";
     height: 78px;
     accessible-role: button;
     accessible-label: title;
@@ -643,24 +730,34 @@ component ResourceButton inherits TouchArea {
         VerticalLayout {
             padding-left: 12px;
             padding-right: 10px;
-            padding-top: 8px;
-            padding-bottom: 8px;
-            spacing: 2px;
+            padding-top: root.stacked ? 6px : 8px;
+            padding-bottom: root.stacked ? 4px : 8px;
+            spacing: 1px;
             alignment: start;
             Text {
                 text: root.title;
                 font-size: 12px;
                 color: Theme.text-muted;
                 overflow: elide;
-                height: 16px;
+                height: 15px;
             }
             Text {
                 text: root.value;
-                font-size: 14px;
+                font-size: root.stacked ? 12px : 14px;
                 font-weight: 600;
                 color: root.kind == 3 ? Theme.unsupported : root.kind == 2 ? Theme.unavailable : Theme.text;
+                wrap: no-wrap;
                 overflow: elide;
-                height: 20px;
+                height: root.stacked ? 15px : 20px;
+            }
+            if root.stacked: Text {
+                text: root.value-b;
+                font-size: 12px;
+                font-weight: 600;
+                color: root.kind == 3 ? Theme.unsupported : root.kind == 2 ? Theme.unavailable : Theme.text;
+                wrap: no-wrap;
+                overflow: elide;
+                height: 15px;
             }
             Sparkline { points: root.spark; }
         }
@@ -909,6 +1006,38 @@ component ArrangeRow inherits Rectangle {
     }
 }
 
+component ThemeMark inherits Rectangle {
+    in property <int> mode: 2;
+    width: 16px;
+    height: 16px;
+    // Light is an open ring, dark is filled, system is a half-filled ring.
+    // The old collapsed label "自" sat on top of "管理者" and read as one broken word.
+    Rectangle {
+        x: 1px;
+        y: 1px;
+        width: 14px;
+        height: 14px;
+        border-radius: 7px;
+        border-width: 1px;
+        border-color: Theme.accent-text;
+        background: root.mode == 1 ? Theme.accent-text : transparent;
+        clip: true;
+        if root.mode == 2: Rectangle {
+            width: 7px;
+            height: 100%;
+            background: Theme.accent-text;
+        }
+        if root.mode == 0: Rectangle {
+            x: 4px;
+            y: 4px;
+            width: 6px;
+            height: 6px;
+            border-radius: 3px;
+            background: Theme.accent-text;
+        }
+    }
+}
+
 component ThemeSwitch inherits Rectangle {
     in property <bool> expanded: true;
     height: expanded ? 56px : 36px;
@@ -926,15 +1055,10 @@ component ThemeSwitch inherits Rectangle {
             height: parent.height - 4px;
             border-radius: 6px;
             background: collapsed-touch.pressed ? Theme.nav-pressed : collapsed-touch.has-hover ? Theme.nav-hover : transparent;
-            Text {
-                width: 100%;
-                height: 100%;
-                text: Theme.preference == 0 ? "明" : Theme.preference == 1 ? "暗" : "自";
-                font-size: 13px;
-                font-weight: 600;
-                color: Theme.accent-text;
-                horizontal-alignment: center;
-                vertical-alignment: center;
+            ThemeMark {
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                mode: Theme.preference;
             }
         }
     }
@@ -1046,6 +1170,7 @@ export component AppWindow inherits Window {
     in-out property <string> status-text: "計測を開始しています…";
     in-out property <string> warning-text: "";
     in-out property <bool> warning-visible: false;
+    in-out property <bool> warning-quiet: false;
     in-out property <string> detail-title: "CPU";
     in-out property <string> detail-value: "N/A";
     in-out property <int> detail-kind: 2;
@@ -1060,6 +1185,7 @@ export component AppWindow inherits Window {
     in-out property <string> graph-axis-low: "0";
     in-out property <[ProcessRow]> rows;
     in-out property <[TopRow]> top-rows;
+    in-out property <[AdapterLine]> adapters;
     in-out property <[float]> detail-points;
     in-out property <[float]> cpu-spark;
     in-out property <[float]> memory-spark;
@@ -1076,8 +1202,10 @@ export component AppWindow inherits Window {
     in-out property <string> memory-summary: "N/A";
     in-out property <int> memory-kind: 2;
     in-out property <string> disk-summary: "未対応";
+    in-out property <string> disk-summary-b: "";
     in-out property <int> disk-kind: 3;
     in-out property <string> network-summary: "未対応";
+    in-out property <string> network-summary-b: "";
     in-out property <int> network-kind: 3;
     in-out property <string> gpu3d-summary: "未対応";
     in-out property <int> gpu3d-kind: 3;
@@ -1253,6 +1381,7 @@ export component AppWindow inherits Window {
 
                 nav-host := Rectangle {
                     vertical-stretch: 1;
+                    min-height: 0px;
                     clip: true;
 
                     nav-flick := Flickable {
@@ -1301,14 +1430,14 @@ export component AppWindow inherits Window {
                 ThemeSwitch { expanded: root.nav-expanded; }
 
                 if !root.nav-expanded: Rectangle {
-                    height: 18px;
+                    height: 22px;
                     Text {
                         x: 2px;
                         width: parent.width - 4px;
                         height: 100%;
                         text: root.privilege-short;
                         accessible-label: root.privilege-text;
-                        font-size: 9px;
+                        font-size: 10px;
                         color: Theme.text-muted;
                         horizontal-alignment: center;
                         vertical-alignment: center;
@@ -1380,21 +1509,9 @@ export component AppWindow inherits Window {
                     color: Theme.text-secondary;
                     wrap: word-wrap;
                 }
-                if root.warning-visible: Rectangle {
-                    background: Theme.warn-bg;
-                    border-width: 1px;
-                    border-color: Theme.warn-border;
-                    height: 36px;
-                    Text {
-                        x: 10px;
-                        width: parent.width - 20px;
-                        height: 100%;
-                        text: root.warning-text;
-                        vertical-alignment: center;
-                        font-size: 12px;
-                        color: Theme.warn-text;
-                        overflow: elide;
-                    }
+                if root.warning-visible: NoticeBanner {
+                    text: root.warning-text;
+                    quiet: root.warning-quiet;
                 }
                 process-frame := Rectangle {
                     vertical-stretch: 1;
@@ -1521,21 +1638,9 @@ export component AppWindow inherits Window {
             if root.page == 1: perf-page := VerticalLayout {
                 width: 100%;
                 height: 100%;
-                if root.warning-visible: Rectangle {
-                    height: 28px;
-                    background: Theme.warn-bg;
-                    border-width: 1px;
-                    border-color: Theme.warn-border;
-                    Text {
-                        x: 10px;
-                        width: parent.width - 20px;
-                        height: 100%;
-                        text: root.warning-text;
-                        vertical-alignment: center;
-                        font-size: 12px;
-                        color: Theme.warn-text;
-                        overflow: elide;
-                    }
+                if root.warning-visible: NoticeBanner {
+                    text: root.warning-text;
+                    quiet: root.warning-quiet;
                 }
                 perf-row := HorizontalLayout {
                     vertical-stretch: 1;
@@ -1621,6 +1726,7 @@ export component AppWindow inherits Window {
                                 if root.resource-shown[id] && id == 2: ResourceButton {
                                     title: "ディスク";
                                     value: root.disk-summary;
+                                    value-b: root.disk-summary-b;
                                     kind: root.disk-kind;
                                     spark: root.disk-spark;
                                     active: root.resource == 2;
@@ -1629,6 +1735,7 @@ export component AppWindow inherits Window {
                                 if root.resource-shown[id] && id == 3: ResourceButton {
                                     title: "ネットワーク";
                                     value: root.network-summary;
+                                    value-b: root.network-summary-b;
                                     kind: root.network-kind;
                                     spark: root.network-spark;
                                     active: root.resource == 3;
@@ -1718,35 +1825,51 @@ export component AppWindow inherits Window {
                         vertical-stretch: 1;
                         min-width: 0px;
                         min-height: 0px;
-                        detail-column := Rectangle {
+                        clip: true;
+                        detail-column := VerticalLayout {
                                 width: 100%;
                                 height: 100%;
-                                background: transparent;
-                                clip: true;
+                                padding-left: 16px;
+                                padding-right: 16px;
+                                padding-top: 12px;
+                                padding-bottom: 8px;
+                                spacing: 6px;
+                                detail-title := Text {
+                                    text: root.detail-title;
+                                    font-size: 20px;
+                                    font-weight: 600;
+                                    color: Theme.text;
+                                    wrap: word-wrap;
+                                }
+                                detail-value := Text {
+                                    text: root.detail-value;
+                                    font-size: 28px;
+                                    font-weight: 700;
+                                    color: root.detail-kind == 3 ? Theme.unsupported : root.detail-kind == 2 ? Theme.unavailable : Theme.accent;
+                                    wrap: word-wrap;
+                                }
+                                if root.detail-note != "": Text {
+                                    text: root.detail-note;
+                                    font-size: 13px;
+                                    color: Theme.text-secondary;
+                                    wrap: word-wrap;
+                                }
                                 detail-flick := Flickable {
+                                    vertical-stretch: 1;
+                                    min-height: 0px;
+                                    preferred-height: 0px;
                                     width: 100%;
-                                    height: 100%;
                                     mouse-drag-pan-enabled: false;
+                                    property <int> resource-watch: root.resource;
+                                    changed resource-watch => { self.content-y = 0; }
                                     VerticalLayout {
                                         width: parent.width;
-                                        padding: 16px;
                                         spacing: 8px;
                                         alignment: start;
-                                        detail-title := Text {
-                                            text: root.detail-title;
-                                            font-size: 20px;
-                                            font-weight: 600;
-                                            color: Theme.text;
-                                            wrap: word-wrap;
+                                        if root.adapters.length > 0: AdapterTable {
+                                            rows: root.adapters;
                                         }
-                                        detail-value := Text {
-                                            text: root.detail-value;
-                                            font-size: 28px;
-                                            font-weight: 700;
-                                            color: root.detail-kind == 3 ? Theme.unsupported : root.detail-kind == 2 ? Theme.unavailable : Theme.accent;
-                                            wrap: word-wrap;
-                                        }
-                                        Text {
+                                        if root.detail-extra != "": Text {
                                             text: root.detail-extra;
                                             font-size: 13px;
                                             color: Theme.text-secondary;
@@ -2138,12 +2261,6 @@ export component AppWindow inherits Window {
                                             pid: row.pid;
                                             value: row.value;
                                             kind: row.kind;
-                                        }
-                                        if root.detail-note != "": Text {
-                                            text: root.detail-note;
-                                            font-size: 13px;
-                                            color: Theme.text-secondary;
-                                            wrap: word-wrap;
                                         }
                                     }
                                 }

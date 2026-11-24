@@ -1,6 +1,7 @@
 //! User-visible formatting. Japanese labels distinguish a real zero from a gap.
 
 use crate::metric::MetricValue;
+use crate::model::ProcessNetMode;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DisplayKind {
@@ -65,40 +66,77 @@ pub fn format_bytes_per_sec(value: MetricValue<f64>) -> String {
     }
 }
 
-/// Per-process network cell. `needs_admin` replaces a missing reading with an
-/// explicit state instead of a fake zero. A real reading still wins.
+/// Per-process network cell. Receive is the first argument (`InOctets`).
+/// An unimplemented collector is `未対応`, never `要管理者`. A real reading
+/// still wins over either placeholder.
 pub fn format_network_cell(
-    send: MetricValue<f64>,
     recv: MetricValue<f64>,
-    needs_admin: bool,
+    send: MetricValue<f64>,
+    mode: ProcessNetMode,
 ) -> (String, DisplayKind) {
-    let (text, kind) = format_rate_pair(send, recv);
-    if needs_admin && !matches!(kind, DisplayKind::Value | DisplayKind::Zero) {
-        ("要管理者".to_string(), DisplayKind::Unavailable)
-    } else {
-        (text, kind)
+    let (text, kind) = format_network_pair(recv, send);
+    let missing = !matches!(kind, DisplayKind::Value | DisplayKind::Zero);
+    match mode {
+        ProcessNetMode::NeedsAdmin if missing => ("要管理者".to_string(), DisplayKind::Unavailable),
+        ProcessNetMode::Unimplemented if missing => {
+            ("未対応".to_string(), DisplayKind::Unsupported)
+        }
+        _ => (text, kind),
     }
 }
 
+/// One line, receive then send. Disk keeps [`format_rate_pair`].
+pub fn format_network_pair(
+    recv: MetricValue<f64>,
+    send: MetricValue<f64>,
+) -> (String, DisplayKind) {
+    format_labeled_pair("受信", "送信", recv, send, false)
+}
+
+/// Two lines for the narrow resource card.
+#[cfg_attr(not(feature = "ui"), allow(dead_code))]
+pub fn format_network_lines(
+    recv: MetricValue<f64>,
+    send: MetricValue<f64>,
+) -> (String, DisplayKind) {
+    format_labeled_pair("受信", "送信", recv, send, true)
+}
+
+/// Two lines so a disk card can show both rates without ellipsis.
+#[cfg_attr(not(feature = "ui"), allow(dead_code))]
+pub fn format_disk_lines(read: MetricValue<f64>, write: MetricValue<f64>) -> (String, DisplayKind) {
+    format_labeled_pair("R", "W", read, write, true)
+}
+
 pub fn format_rate_pair(read: MetricValue<f64>, write: MetricValue<f64>) -> (String, DisplayKind) {
-    match (finite_rate(read), finite_rate(write)) {
+    format_labeled_pair("R", "W", read, write, false)
+}
+
+fn format_labeled_pair(
+    left_label: &str,
+    right_label: &str,
+    left: MetricValue<f64>,
+    right: MetricValue<f64>,
+    stacked: bool,
+) -> (String, DisplayKind) {
+    match (finite_rate(left), finite_rate(right)) {
         (MetricValue::Unsupported, MetricValue::Unsupported) => {
             ("未対応".to_string(), DisplayKind::Unsupported)
         }
-        (MetricValue::Value(read), MetricValue::Value(write)) => {
-            let kind = if read == 0.0 && write == 0.0 {
+        (MetricValue::Value(left), MetricValue::Value(right)) => {
+            let kind = if left == 0.0 && right == 0.0 {
                 DisplayKind::Zero
             } else {
                 DisplayKind::Value
             };
-            (
-                format!(
-                    "R {}  W {}",
-                    format_bytes_per_sec(MetricValue::Value(read)),
-                    format_bytes_per_sec(MetricValue::Value(write))
-                ),
-                kind,
-            )
+            let left_text = format_bytes_per_sec(MetricValue::Value(left));
+            let right_text = format_bytes_per_sec(MetricValue::Value(right));
+            let text = if stacked {
+                format!("{left_label} {left_text}\n{right_label} {right_text}")
+            } else {
+                format!("{left_label} {left_text}  {right_label} {right_text}")
+            };
+            (text, kind)
         }
         _ => ("N/A".to_string(), DisplayKind::Unavailable),
     }
@@ -184,5 +222,32 @@ mod tests {
     fn binary_units() {
         assert_eq!(format_bytes(MetricValue::Value(1024)), "1.0 KB");
         assert_eq!(format_bytes(MetricValue::Value(1024 * 1024)), "1.00 MB");
+    }
+
+    #[test]
+    fn network_receive_is_in_octets_and_zero_is_not_na() {
+        let recv = MetricValue::Value(3.6 * 1024.0);
+        let send = MetricValue::Value(5.4 * 1024.0);
+        let (header, _) = format_network_pair(recv, send);
+        let (card, _) = format_network_lines(recv, send);
+        assert_eq!(header, "受信 3.6 KB/s  送信 5.4 KB/s");
+        assert_eq!(card, "受信 3.6 KB/s\n送信 5.4 KB/s");
+        assert!(header.find("受信").unwrap() < header.find("送信").unwrap());
+        assert!(!header.contains('R'));
+        let (zero, kind) = format_network_pair(MetricValue::Value(0.0), MetricValue::Value(0.0));
+        assert_eq!(zero, "受信 0 B/s  送信 0 B/s");
+        assert_eq!(kind, DisplayKind::Zero);
+        assert_eq!(
+            format_network_pair(MetricValue::Unavailable, MetricValue::Unavailable).0,
+            "N/A"
+        );
+        let (cell, cell_kind) = format_network_cell(
+            MetricValue::Unavailable,
+            MetricValue::Unavailable,
+            ProcessNetMode::Unimplemented,
+        );
+        assert_eq!(cell, "未対応");
+        assert_eq!(cell_kind, DisplayKind::Unsupported);
+        assert_ne!(cell, "要管理者");
     }
 }

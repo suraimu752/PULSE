@@ -43,6 +43,9 @@ pub fn rank(
     if resource == ResourceId::Network && snapshot.process_net == ProcessNetMode::NeedsAdmin {
         return RankStatus::NeedsAdmin;
     }
+    if resource == ResourceId::Network && snapshot.process_net == ProcessNetMode::Unimplemented {
+        return RankStatus::Unsupported;
+    }
     let mut rows: Vec<(&ProcessSnapshot, f64, String, DisplayKind)> = Vec::new();
     let mut saw_unsupported = false;
     let mut saw_other = false;
@@ -346,9 +349,15 @@ mod tests {
     #[test]
     fn network_without_attribution_is_not_a_ranking() {
         let mut snapshot = snap(vec![cpu_row(1, 1, "app", MetricValue::Value(1.0))]);
-        snapshot.process_net = ProcessNetMode::NeedsAdmin;
+        snapshot.process_net = ProcessNetMode::Unimplemented;
         snapshot.processes[0].net_send_bps = MetricValue::Value(1_000.0);
         snapshot.processes[0].net_recv_bps = MetricValue::Value(1_000.0);
+        assert_eq!(
+            rank(&snapshot, ResourceId::Network, None, 5),
+            RankStatus::Unsupported
+        );
+        assert_eq!(empty_rank_text(&RankStatus::Unsupported), Some("未対応"));
+        snapshot.process_net = ProcessNetMode::NeedsAdmin;
         assert_eq!(
             rank(&snapshot, ResourceId::Network, None, 5),
             RankStatus::NeedsAdmin

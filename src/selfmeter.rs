@@ -128,6 +128,7 @@ mod tests {
             gpu_presence: crate::model::GpuPresence::Unknown,
             processes: Vec::new(),
             warning: None,
+            warning_quiet: false,
             cpu_detail: crate::model::CpuDetailSnapshot::off(),
         };
         let empty = estimate_ring_bytes(&snapshot, 120);

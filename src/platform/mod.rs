@@ -249,13 +249,13 @@ mod tests {
         for enricher in &mut make_enrichers(Arc::new(AtomicBool::new(false))) {
             enricher.enrich(&mut sample);
         }
-        assert_eq!(sample.process_net, ProcessNetMode::NeedsAdmin);
+        assert_eq!(sample.process_net, ProcessNetMode::Unimplemented);
         for (process, (pid, cpu, memory)) in sample.processes.iter().zip(&before) {
             assert_eq!(process.pid, *pid);
             assert_eq!(process.cpu_time_100ns, *cpu);
             assert_eq!(process.memory_bytes, *memory);
-            assert!(matches!(process.net_send_bytes, MetricValue::Unavailable));
-            assert!(matches!(process.net_recv_bytes, MetricValue::Unavailable));
+            assert!(matches!(process.net_send_bytes, MetricValue::Unsupported));
+            assert!(matches!(process.net_recv_bytes, MetricValue::Unsupported));
             assert!(!matches!(process.disk_read_bytes, MetricValue::Unsupported));
         }
     }

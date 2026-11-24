@@ -213,6 +213,9 @@ pub struct RawSample {
     pub gpu_presence: GpuPresence,
     pub processes: Vec<RawProcess>,
     pub warning: Option<String>,
+    /// The warning is a protected-process notice. The UI keeps it quiet,
+    /// because elevating again will not open those processes.
+    pub warning_quiet: bool,
     /// Filled by the ETW enricher or the mock. The aggregator copies it through.
     /// It does not feed [`Snapshot::cpu_percent`].
     pub cpu_detail: CpuDetailSnapshot,
@@ -244,6 +247,7 @@ impl RawSample {
             gpu_presence: GpuPresence::Unknown,
             processes: Vec::new(),
             warning: None,
+            warning_quiet: false,
             cpu_detail: CpuDetailSnapshot::off(),
         }
     }
@@ -252,6 +256,7 @@ impl RawSample {
         if text.is_empty() {
             return;
         }
+        self.warning_quiet = false;
         self.warning = Some(match self.warning.take() {
             Some(existing) if existing.contains(text) => existing,
             Some(existing) => format!("{existing}; {text}"),
@@ -327,6 +332,8 @@ pub struct Snapshot {
     pub gpu_presence: GpuPresence,
     pub processes: Vec<ProcessSnapshot>,
     pub warning: Option<String>,
+    /// See [`RawSample::warning_quiet`].
+    pub warning_quiet: bool,
     /// Per-logical-processor breakdown. Empty and [`CpuDetailState::Off`] unless
     /// detailed analysis is on. This never replaces [`Self::cpu_percent`].
     pub cpu_detail: CpuDetailSnapshot,
@@ -354,15 +361,20 @@ pub struct GpuAdapter {
 
 /// How per-process network bytes should be read.
 ///
-/// Adapter totals can exist while per-process attribution cannot. `NeedsAdmin`
-/// means the process cells are not a measured zero; the UI says so.
+/// Adapter totals can exist while per-process attribution cannot.
+///
+/// `Unimplemented` is not an elevation problem. Do not report it as
+/// `NeedsAdmin`. `NeedsAdmin` is only for a collector that exists and was
+/// refused for lack of rights.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum ProcessNetMode {
     /// Per-process counters are meaningful (including Unavailable for one process).
     #[default]
     Attributed,
-    /// This build does not attribute flows to a PID without elevation.
+    /// A real per-process collector ran and was refused for lack of rights.
     NeedsAdmin,
+    /// Per-process network is not implemented in this build.
+    Unimplemented,
 }
 
 /// Whether a GPU collector found any adapter.
@@ -475,6 +487,7 @@ impl Snapshot {
             gpu_presence: GpuPresence::Unknown,
             processes: Vec::new(),
             warning: None,
+            warning_quiet: false,
             cpu_detail: CpuDetailSnapshot::off(),
         }
     }

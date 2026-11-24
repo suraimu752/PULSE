@@ -40,7 +40,8 @@ Windows API / PDH / GetIfTable2
 | `src/platform/etw.rs` | 専用セッション `PULSE-CPU`。コンテキストスイッチを区間集計する。他のセッションは止めない |
 | `src/cpudetail.rs` | 論理 CPU の台帳。スイッチ、移動、区間境界、PID と TID の再利用。UI からは順位だけ使う |
 | `src/platform/disk.rs` | GetProcessIoCounters と PhysicalDisk PDH。物理転送量とは別 |
-| `src/platform/network.rs` | GetIfTable2。プロセス帰属はしない |
+| `src/platform/network.rs` | GetIfTable2。フィルタは捨てる。プロセス帰属は未実装 |
+| `src/netadapter.rs` | 残すインタフェースの判定。InOctets は受信 |
 | `src/platform/gpu.rs` | GPU Engine と GPU Process/Adapter Memory。使用率は最大 |
 | `src/devices.rs` | デバイスごとの読み書きを、欠けを 0 にせず合わせる |
 | `src/platform/stub.rs` | Windows 以外。数値を作らない |

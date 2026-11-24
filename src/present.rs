@@ -1,9 +1,11 @@
 //! Turn snapshots into the strings the window shows. No dummy numbers are introduced here.
 
 use crate::format::{
-    bytes_kind, format_bytes, format_memory_pair, format_percent, format_rate_pair, percent_kind,
-    DisplayKind,
+    bytes_kind, format_bytes, format_bytes_per_sec, format_memory_pair, format_network_pair,
+    format_percent, format_rate_pair, percent_kind, DisplayKind,
 };
+#[cfg(feature = "ui")]
+use crate::format::{format_disk_lines, format_network_lines};
 use crate::metric::MetricValue;
 use crate::model::{
     GpuAdapter, GpuPresence, ProcessNetMode, ProcessSnapshot, ResourceId, Snapshot,
@@ -110,8 +112,14 @@ pub fn present_cards(snapshot: &Snapshot) -> ResourceCards {
             text: format_memory_pair(snapshot.memory_used_bytes, snapshot.memory_total_bytes),
             kind: memory_kind(snapshot.memory_used_bytes, snapshot.memory_total_bytes),
         },
-        disk: card_pair(snapshot.disk_read_bps, snapshot.disk_write_bps),
-        network: card_pair(snapshot.net_send_bps, snapshot.net_recv_bps),
+        disk: card_from(format_disk_lines(
+            snapshot.disk_read_bps,
+            snapshot.disk_write_bps,
+        )),
+        network: card_from(format_network_lines(
+            snapshot.net_recv_bps,
+            snapshot.net_send_bps,
+        )),
         gpu3d: card_percent(snapshot.gpu_3d_percent),
         gpu_encode: card_percent(snapshot.gpu_encode_percent),
         gpu_decode: card_percent(snapshot.gpu_decode_percent),
@@ -277,11 +285,8 @@ enum GpuEngine {
 
 fn present_row(process: &ProcessSnapshot, net: ProcessNetMode) -> PresentedRow {
     let (disk, disk_kind) = format_rate_pair(process.disk_read_bps, process.disk_write_bps);
-    let (network, network_kind) = crate::format::format_network_cell(
-        process.net_send_bps,
-        process.net_recv_bps,
-        net == ProcessNetMode::NeedsAdmin,
-    );
+    let (network, network_kind) =
+        crate::format::format_network_cell(process.net_recv_bps, process.net_send_bps, net);
     PresentedRow {
         name: process.name.to_string(),
         pid: process.key.pid.to_string(),
@@ -324,9 +329,11 @@ fn card_percent(value: MetricValue<f64>) -> ResourceCard {
 }
 
 #[cfg(feature = "ui")]
-fn card_pair(read: MetricValue<f64>, write: MetricValue<f64>) -> ResourceCard {
-    let (text, kind) = format_rate_pair(read, write);
-    ResourceCard { text, kind }
+fn card_from(pair: (String, DisplayKind)) -> ResourceCard {
+    ResourceCard {
+        text: pair.0,
+        kind: pair.1,
+    }
 }
 
 fn rate_detail(
@@ -364,48 +371,58 @@ fn disk_extra(snapshot: &Snapshot) -> String {
 }
 
 fn network_detail(snapshot: &Snapshot) -> DetailText {
-    let admin = snapshot.process_net == ProcessNetMode::NeedsAdmin;
-    let (value, kind) = format_rate_pair(snapshot.net_recv_bps, snapshot.net_send_bps);
+    let (value, kind) = format_network_pair(snapshot.net_recv_bps, snapshot.net_send_bps);
     let unsupported = matches!(
         (snapshot.net_recv_bps, snapshot.net_send_bps),
         (MetricValue::Unsupported, MetricValue::Unsupported)
     ) && snapshot.adapters.is_empty();
-    let mut extra = if snapshot.adapters.is_empty() {
-        interval_text(snapshot)
-    } else {
-        snapshot
-            .adapters
-            .iter()
-            .map(|adapter| {
-                let (text, _) = format_rate_pair(adapter.read_bps, adapter.write_bps);
-                format!("{}  {text}", adapter.name)
-            })
-            .collect::<Vec<_>>()
-            .join("    ")
-    };
-    if admin {
-        extra.push_str("    プロセス別の帰属は要管理者");
-    }
-    if unsupported && !admin {
+    if unsupported {
         return unsupported_detail("ネットワーク");
     }
+    let extra = if snapshot.adapters.is_empty() {
+        interval_text(snapshot)
+    } else {
+        String::new()
+    };
     DetailText {
         title: "ネットワーク".to_string(),
-        value: if unsupported && admin {
-            "要管理者".to_string()
-        } else {
-            value
-        },
-        kind: if unsupported && admin {
-            DisplayKind::Unavailable
-        } else {
-            kind
-        },
+        value,
+        kind,
         extra,
-        note: String::new(),
-        show_graph: !unsupported,
+        note: process_net_note(snapshot.process_net),
+        show_graph: true,
         graph_is_memory: false,
     }
+}
+
+fn process_net_note(mode: ProcessNetMode) -> String {
+    match mode {
+        ProcessNetMode::Unimplemented => "プロセス別の通信は未対応".to_string(),
+        ProcessNetMode::NeedsAdmin => "プロセス別の通信は要管理者".to_string(),
+        ProcessNetMode::Attributed => String::new(),
+    }
+}
+
+/// One row of the adapter table. `read_bps` is receive (`InOctets`) and
+/// `write_bps` is send (`OutOctets`). A measured zero stays `0 B/s`.
+#[cfg_attr(not(feature = "ui"), allow(dead_code))]
+pub struct PresentedAdapter {
+    pub name: String,
+    pub recv: String,
+    pub send: String,
+}
+
+#[cfg_attr(not(feature = "ui"), allow(dead_code))]
+pub fn adapter_lines(snapshot: &Snapshot) -> Vec<PresentedAdapter> {
+    snapshot
+        .adapters
+        .iter()
+        .map(|adapter| PresentedAdapter {
+            name: adapter.name.clone(),
+            recv: format_bytes_per_sec(adapter.read_bps),
+            send: format_bytes_per_sec(adapter.write_bps),
+        })
+        .collect()
 }
 
 fn gpu_detail(
@@ -648,7 +665,40 @@ mod tests {
                 gpus: Vec::new(),
             }],
             warning: None,
+            warning_quiet: false,
             cpu_detail: crate::model::CpuDetailSnapshot::off(),
+        }
+    }
+
+    #[test]
+    fn network_views_share_receive_then_send_and_do_not_say_needs_admin() {
+        let mut shot = snapshot();
+        shot.net_recv_bps = MetricValue::Value(3.6 * 1024.0);
+        shot.net_send_bps = MetricValue::Value(5.4 * 1024.0);
+        shot.process_net = ProcessNetMode::Unimplemented;
+        shot.disk_read_bps = MetricValue::Value(2.41 * 1024.0 * 1024.0);
+        shot.disk_write_bps = MetricValue::Value(0.0);
+        shot.adapters = vec![crate::model::NamedRate {
+            name: "イーサネット".to_string(),
+            read_bps: MetricValue::Value(3.6 * 1024.0),
+            write_bps: MetricValue::Value(5.4 * 1024.0),
+        }];
+        let detail = present_detail(&shot, ResourceId::Network);
+        assert_eq!(detail.value, "受信 3.6 KB/s  送信 5.4 KB/s");
+        assert_eq!(detail.note, "プロセス別の通信は未対応");
+        assert!(!detail.extra.contains("要管理者"));
+        assert!(!detail.value.contains('R'));
+        let lines = adapter_lines(&shot);
+        assert_eq!(lines[0].recv, "3.6 KB/s");
+        assert_eq!(lines[0].send, "5.4 KB/s");
+        let (zero, kind) = format_network_pair(MetricValue::Value(0.0), MetricValue::Value(0.0));
+        assert_eq!(zero, "受信 0 B/s  送信 0 B/s");
+        assert_eq!(kind, DisplayKind::Zero);
+        #[cfg(feature = "ui")]
+        {
+            let cards = present_cards(&shot);
+            assert_eq!(cards.network.text, "受信 3.6 KB/s\n送信 5.4 KB/s");
+            assert_eq!(cards.disk.text, "R 2.41 MB/s\nW 0 B/s");
         }
     }
 
