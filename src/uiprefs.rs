@@ -534,4 +534,12 @@ mod tests {
         };
         assert!(!UiPrefs::parse(&shut.to_file()).nav_expanded);
     }
+
+    #[test]
+    fn a_corrupt_file_keeps_the_defaults() {
+        let parsed = UiPrefs::parse("this is not a config\ncolumns=nope\nnav=sideways\n\0\n");
+        assert_eq!(parsed.column_order, UiPrefs::default().column_order);
+        assert!(!parsed.nav_expanded);
+        assert!(parsed.column_shown.iter().all(|shown| *shown));
+    }
 }

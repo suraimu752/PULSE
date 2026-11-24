@@ -214,11 +214,15 @@ impl MetricEnricher for EtwEnricher {
             for process in &sample.processes {
                 note_process(&mut ledger, process);
             }
-            let lost_now = query_lost(session.control);
-            if lost_now > session.lost_seen {
-                ledger.mark_lost(u64::from(lost_now - session.lost_seen));
+            if let Some(lost_now) = query_lost(session.control) {
+                if lost_now > session.lost_seen {
+                    ledger.mark_lost(u64::from(lost_now - session.lost_seen));
+                } else if lost_now < session.lost_seen {
+                    // The counter went backwards. This interval is incomplete.
+                    ledger.mark_lost(1);
+                }
+                session.lost_seen = lost_now;
             }
-            session.lost_seen = lost_now;
             if !ledger.has_timestamp() {
                 // No event clock yet. A QPC close here would poison the next
                 // interval if the stamps turn out to be FILETIME.
@@ -317,6 +321,11 @@ fn stop_own_session() -> Result<(), SessionError> {
             win32("ControlTrace", status)
         )));
     }
+    if !session_guid_is_ours(block.props.Wnode.Guid) {
+        return Err(SessionError::Message(
+            "ETW セッション PULSE-CPU の GUID が一致しないため、停止しません".to_string(),
+        ));
+    }
     let mut block = TraceBlock::new();
     let name = session_wide();
     let status = unsafe {
@@ -349,7 +358,7 @@ fn stop_handle(handle: CONTROLTRACE_HANDLE) {
     };
 }
 
-fn query_lost(handle: CONTROLTRACE_HANDLE) -> u32 {
+fn query_lost(handle: CONTROLTRACE_HANDLE) -> Option<u32> {
     let mut block = TraceBlock::new();
     let status = unsafe {
         ControlTraceW(
@@ -360,10 +369,15 @@ fn query_lost(handle: CONTROLTRACE_HANDLE) -> u32 {
         )
     };
     if status == ERROR_SUCCESS {
-        block.props.EventsLost
+        Some(block.props.EventsLost)
     } else {
-        0
+        None
     }
+}
+
+/// Stop a same-named session only when the logger GUID is the one PULSE started.
+pub(crate) fn session_guid_is_ours(guid: GUID) -> bool {
+    guid == SESSION_GUID && guid != SystemTraceControlGuid && guid != GUID::from_u128(0)
 }
 
 fn open_consumer(
@@ -632,15 +646,6 @@ fn session_wide() -> Vec<u16> {
     SESSION.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
-/// Two buffers per logical processor, which is ETW's per-processor floor.
-/// Maximum stays at least 64, and never below the minimum.
-fn buffer_limits(logical_processors: usize) -> (u32, u32) {
-    let processors = u32::try_from(logical_processors.max(1)).unwrap_or(u32::MAX);
-    let minimum = processors.saturating_mul(2).max(4);
-    let maximum = minimum.max(64);
-    (minimum, maximum)
-}
-
 #[repr(C)]
 struct TraceBlock {
     props: EVENT_TRACE_PROPERTIES,
@@ -657,7 +662,7 @@ impl TraceBlock {
         let n = wide.len().min(block.name.len());
         block.name[..n].copy_from_slice(&wide[..n]);
         block.name[block.name.len() - 1] = 0;
-        let (minimum, maximum) = buffer_limits(logical_cpus().len());
+        let (minimum, maximum) = super::etw_buffer_limits(logical_cpus().len());
         block.props.Wnode.BufferSize = u32::try_from(std::mem::size_of::<Self>()).unwrap_or(0);
         // A private system logger needs its own GUID. SystemTraceControlGuid
         // is only valid for the session named NT Kernel Logger.
@@ -722,10 +727,11 @@ mod tests {
 
     #[test]
     fn twenty_four_cpus_get_two_buffers_each() {
-        assert_eq!(buffer_limits(24), (48, 64));
-        assert_eq!(buffer_limits(4), (8, 64));
-        assert_eq!(buffer_limits(64), (128, 128));
-        assert_eq!(buffer_limits(0), (4, 64));
+        assert_eq!(super::super::etw_buffer_limits(24), (48, 64));
+        assert_eq!(super::super::etw_buffer_limits(4), (8, 64));
+        assert_eq!(super::super::etw_buffer_limits(64), (128, 128));
+        assert_eq!(super::super::etw_buffer_limits(0), (4, 64));
+        assert_eq!(super::super::etw_buffer_ceiling_bytes(24), 64 * 64 * 1024);
     }
 
     #[test]
@@ -757,6 +763,10 @@ mod tests {
         assert_ne!(CONSUMER_MODE & PROCESS_TRACE_MODE_RAW_TIMESTAMP, 0);
         assert!(props.MinimumBuffers >= 4);
         assert!(props.MaximumBuffers >= props.MinimumBuffers);
+        assert!(session_guid_is_ours(SESSION_GUID));
+        assert!(!session_guid_is_ours(SystemTraceControlGuid));
+        assert!(!session_guid_is_ours(GUID::from_u128(0)));
+        assert!(!session_guid_is_ours(GUID::from_u128(1)));
         let wide = session_wide();
         assert_eq!(&block.name[..wide.len()], wide.as_slice());
     }

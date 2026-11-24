@@ -38,6 +38,10 @@ struct UiState {
     sort_desc: bool,
     resource: ResourceId,
     last_sequence: Option<u64>,
+    /// Sequence last copied into the process table. The performance page skips that copy.
+    rows_for: Option<u64>,
+    /// Sequence last copied into the performance graphs.
+    perf_for: Option<u64>,
     selection: SelectionState,
     timeline: Vec<Option<Arc<Snapshot>>>,
     adapter: Option<u64>,
@@ -93,6 +97,8 @@ pub fn run(options: LaunchOptions) -> Result<(), String> {
         sort_desc: true,
         resource: ResourceId::from_index(options.resource.unwrap_or(0)),
         last_sequence: None,
+        rows_for: None,
+        perf_for: None,
         selection: SelectionState::live(),
         timeline: Vec::new(),
         adapter: None,
@@ -554,6 +560,7 @@ fn paint_logical(ui: &AppWindow, state: &Rc<RefCell<UiState>>, sample: &Publishe
     };
     if resource != ResourceId::Cpu {
         ui.set_cpu_diagnostics("".into());
+        ui.set_self_diagnostics("".into());
         ui.set_cpu_message("".into());
         ui.set_cpu_admin(false);
         ui.set_cpu_cards(ModelRc::new(VecModel::from(Vec::<CpuCard>::new())));
@@ -561,6 +568,7 @@ fn paint_logical(ui: &AppWindow, state: &Rc<RefCell<UiState>>, sample: &Publishe
     }
     let ui_nanos = state.borrow().ui_nanos;
     ui.set_cpu_diagnostics(cpu_diagnostics(sample, ui_nanos, on).into());
+    ui.set_self_diagnostics(self_diagnostics(sample).into());
     if !logical {
         ui.set_cpu_message("".into());
         ui.set_cpu_admin(false);
@@ -699,6 +707,14 @@ fn sync_cpu_series(
     state.borrow().cpu_series.set_vec(flat);
 }
 
+fn count_text(value: crate::metric::MetricValue<u32>) -> String {
+    match value {
+        crate::metric::MetricValue::Value(number) => number.to_string(),
+        crate::metric::MetricValue::Unavailable => "N/A".to_string(),
+        crate::metric::MetricValue::Unsupported => "未対応".to_string(),
+    }
+}
+
 fn cpu_diagnostics(sample: &PublishedSample, ui_nanos: u64, toggle_on: bool) -> String {
     let detail = &sample.snapshot.cpu_detail;
     let state = match detail.state {
@@ -725,6 +741,27 @@ fn cpu_diagnostics(sample: &PublishedSample, ui_nanos: u64, toggle_on: bool) -> 
     )
 }
 
+fn self_diagnostics(sample: &PublishedSample) -> String {
+    let diag = &sample.diag;
+    let detail = &sample.snapshot.cpu_detail;
+    let prefix = if sample.demo { "DEMO 自己" } else { "自己" };
+    format!(
+        "{prefix}  計測 {} µs  WS {}  プライベート {}  ハンドル {}  スレッド {}  リング {}枠 ~{}  ETW上限 {}  台帳 {}/{}/{}  PDH再生成 {}",
+        diag.sample_nanos / 1_000,
+        format_bytes(diag.working_set),
+        format_bytes(diag.private_bytes),
+        count_text(diag.handles),
+        count_text(diag.threads),
+        diag.ring_slots,
+        format_bytes(crate::metric::MetricValue::Value(diag.ring_bytes)),
+        format_bytes(diag.etw_buffer_ceiling),
+        detail.ledger_threads,
+        detail.ledger_ended,
+        detail.ledger_names,
+        diag.pdh_reopens,
+    )
+}
+
 fn wire_resource(
     ui: &AppWindow,
     state: &Rc<RefCell<UiState>>,
@@ -745,12 +782,31 @@ fn wire_resource(
 
 fn apply(ui: &AppWindow, state: &Rc<RefCell<UiState>>, sample: &PublishedSample, force: bool) {
     let started = std::time::Instant::now();
-    let (column, descending, resource, rows_model) = {
+    // A minimized window keeps sampling and the pinned snapshot, and skips model updates.
+    // The sequence is left stale so restore paints the newest sample.
+    if ui.window().is_minimized() {
+        return;
+    }
+    let page = ui.get_page();
+    let (column, descending, resource, rows_model, paint_rows, paint_perf) = {
         let mut state = state.borrow_mut();
-        if !force && state.last_sequence == Some(sample.snapshot.sequence) {
-            return;
+        let sequence = sample.snapshot.sequence;
+        if !force && state.last_sequence == Some(sequence) {
+            let rows_ready = page != 0 || state.rows_for == Some(sequence);
+            let perf_ready = page != 1 || state.perf_for == Some(sequence);
+            if rows_ready && perf_ready {
+                return;
+            }
         }
-        state.last_sequence = Some(sample.snapshot.sequence);
+        state.last_sequence = Some(sequence);
+        let paint_rows = page == 0;
+        let paint_perf = page == 1;
+        if paint_rows {
+            state.rows_for = Some(sequence);
+        }
+        if paint_perf {
+            state.perf_for = Some(sequence);
+        }
         state.timeline = sample.timeline.clone();
         if let Some(snapshot) = state.pending_retained.take() {
             state.selection.pin(snapshot);
@@ -768,13 +824,19 @@ fn apply(ui: &AppWindow, state: &Rc<RefCell<UiState>>, sample: &PublishedSample,
             state.sort_desc,
             state.resource,
             Rc::clone(&state.rows),
+            paint_rows,
+            paint_perf,
         )
     };
 
-    let presented = present_rows(&sample.snapshot, column, descending);
-    sync_model(&rows_model, presented.into_iter().map(to_row).collect());
-    paint_graphs(ui, state, resource, &sample.charts);
-    paint_history(ui, state, resource, sample);
+    if paint_rows {
+        let presented = present_rows(&sample.snapshot, column, descending);
+        sync_model(&rows_model, presented.into_iter().map(to_row).collect());
+    }
+    if paint_perf {
+        paint_graphs(ui, state, resource, &sample.charts);
+        paint_history(ui, state, resource, sample);
+    }
 
     let line = status_line(
         &sample.snapshot,

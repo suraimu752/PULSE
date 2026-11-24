@@ -1,0 +1,66 @@
+name: Release candidate
+
+# Builds an unsigned Windows x64 zip and a SHA-256 checksum.
+# It does not create or publish a GitHub Release. Publishing stays manual.
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+  id-token: write
+  attestations: write
+
+jobs:
+  windows:
+    name: unsigned zip (Windows x64)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: cargo build (release)
+        run: cargo build --release --locked
+      - name: Assert manifest and version resource
+        shell: pwsh
+        run: |
+          $path = "target/release/PULSE.exe"
+          if (-not (Test-Path $path)) { throw "missing $path" }
+          $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path $path))
+          $ascii = [System.Text.Encoding]::ASCII.GetString($bytes)
+          $utf16 = [System.Text.Encoding]::Unicode.GetString($bytes)
+          foreach ($text in @("requestedExecutionLevel", "requireAdministrator", "ProductName", "FileVersion")) {
+            if (($ascii.IndexOf($text) -lt 0) -and ($utf16.IndexOf($text) -lt 0)) {
+              throw "PULSE.exe is missing: $text"
+            }
+          }
+          if ($ascii.Contains('level="asInvoker"') -or $utf16.Contains('level="asInvoker"')) {
+            throw "PULSE.exe still requests asInvoker"
+          }
+          $version = (Select-String -Path Cargo.toml -Pattern '^version = "([^"]+)"').Matches[0].Groups[1].Value
+          if ($version -eq "1.0.0") { throw "refusing to package 1.0.0" }
+          if (($ascii.IndexOf($version) -lt 0) -and ($utf16.IndexOf($version) -lt 0)) {
+            throw "PULSE.exe is missing version $version"
+          }
+      - name: Zip and checksum
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item target/release/PULSE.exe dist/PULSE.exe
+          $hash = (Get-FileHash dist/PULSE.exe -Algorithm SHA256).Hash.ToLower()
+          Set-Content -Path dist/SHA256SUMS.txt -Encoding ascii -Value "$hash  PULSE.exe"
+          Compress-Archive -Path dist/PULSE.exe, dist/SHA256SUMS.txt -DestinationPath PULSE-windows-x64.zip -Force
+          Write-Host "SHA256 $hash"
+      - name: Attest the zip
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: PULSE-windows-x64.zip
+      - name: Upload the unsigned candidate
+        uses: actions/upload-artifact@v4
+        with:
+          name: PULSE-windows-x64-zip
+          path: |
+            PULSE-windows-x64.zip
+            dist/SHA256SUMS.txt
+          if-no-files-found: error

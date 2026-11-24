@@ -71,11 +71,18 @@ pub fn present_rows(
     column: SortColumn,
     descending: bool,
 ) -> Vec<PresentedRow> {
-    let mut processes = snapshot.processes.clone();
-    sort_processes(&mut processes, column, descending);
-    processes
-        .iter()
-        .map(|process| present_row(process, snapshot.process_net))
+    let mut order: Vec<usize> = (0..snapshot.processes.len()).collect();
+    order.sort_by(|&left, &right| {
+        crate::sort::compare(
+            &snapshot.processes[left],
+            &snapshot.processes[right],
+            column,
+            descending,
+        )
+    });
+    order
+        .into_iter()
+        .map(|index| present_row(&snapshot.processes[index], snapshot.process_net))
         .collect()
 }
 
@@ -276,7 +283,7 @@ fn present_row(process: &ProcessSnapshot, net: ProcessNetMode) -> PresentedRow {
         net == ProcessNetMode::NeedsAdmin,
     );
     PresentedRow {
-        name: process.name.clone(),
+        name: process.name.to_string(),
         pid: process.key.pid.to_string(),
         cpu: format_percent(process.cpu_percent),
         cpu_kind: percent_kind(process.cpu_percent),
@@ -626,7 +633,7 @@ mod tests {
                     creation_time_100ns: 1,
                 },
                 parent_pid: 0,
-                name: "System".to_string(),
+                name: crate::model::SharedName::from("System"),
                 cpu_percent: MetricValue::Value(0.0),
                 memory_bytes: MetricValue::Value(0),
                 disk_read_bps: MetricValue::Unsupported,

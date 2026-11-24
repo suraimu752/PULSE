@@ -137,6 +137,7 @@ fn take(
     // A transient miss keeps the primed query. Reopen only after repeated
     // hard failures, and drop that one side alone.
     if reopen {
+        super::pdh::note_reopen();
         *slot = None;
     }
     None

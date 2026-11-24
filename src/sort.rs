@@ -72,7 +72,7 @@ pub fn sort_processes(processes: &mut [ProcessSnapshot], column: SortColumn, des
     processes.sort_by(|left, right| compare(left, right, column, descending));
 }
 
-fn compare(
+pub(crate) fn compare(
     left: &ProcessSnapshot,
     right: &ProcessSnapshot,
     column: SortColumn,
@@ -194,7 +194,7 @@ mod tests {
                 creation_time_100ns: u64::from(pid),
             },
             parent_pid: 0,
-            name: name.to_string(),
+            name: crate::model::SharedName::from(name),
             cpu_percent: cpu,
             memory_bytes: memory,
             disk_read_bps: MetricValue::Unsupported,
@@ -234,5 +234,25 @@ mod tests {
         sort_processes(&mut rows, SortColumn::Cpu, false);
         let names: Vec<_> = rows.iter().map(|row| row.name.as_str()).collect();
         assert_eq!(names, vec!["d", "a", "b", "c"]);
+    }
+
+    #[test]
+    fn two_thousand_rows_keep_their_values_and_sort_quickly() {
+        let mut rows = Vec::with_capacity(2000);
+        for pid in 0..2000u32 {
+            let cpu = MetricValue::Value(f64::from(pid % 50));
+            rows.push(row("proc", pid, cpu, MetricValue::Value(u64::from(pid))));
+        }
+        let started = std::time::Instant::now();
+        sort_processes(&mut rows, SortColumn::Cpu, true);
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < std::time::Duration::from_millis(500),
+            "sort took {elapsed:?}"
+        );
+        assert_eq!(rows.len(), 2000);
+        assert_eq!(rows[0].cpu_percent, MetricValue::Value(49.0));
+        assert_eq!(rows[1999].cpu_percent, MetricValue::Value(0.0));
+        assert!(rows.iter().all(|row| row.cpu_percent.is_value()));
     }
 }

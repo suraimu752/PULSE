@@ -7,6 +7,9 @@ use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
 use crate::collector::{MetricEnricher, SystemProbe};
+use crate::metric::MetricValue;
+use crate::model::{CpuDetailState, Snapshot};
+use crate::selfmeter::SelfDiagnostics;
 
 #[cfg(windows)]
 mod disk;
@@ -119,6 +122,69 @@ fn privilege_state() -> Option<bool> {
     }
 }
 
+/// Private working set, working set, private bytes, and handle count for this process.
+///
+/// Uses the `GetCurrentProcess` pseudo-handle, which is not closed. Thread count
+/// is filled by the probe when Toolhelp saw this PID. Unread fields stay unavailable.
+pub fn read_self_usage() -> SelfDiagnostics {
+    #[cfg(windows)]
+    {
+        windows::read_self_usage()
+    }
+    #[cfg(not(windows))]
+    {
+        SelfDiagnostics::unavailable()
+    }
+}
+
+/// How many times a PDH query was discarded after repeated hard failures.
+/// Zero means none have been discarded. It is not an unread counter.
+pub fn pdh_reopen_count() -> u32 {
+    #[cfg(windows)]
+    {
+        pdh::reopen_count()
+    }
+    #[cfg(not(windows))]
+    {
+        0
+    }
+}
+
+/// Configured maximum ETW buffer bytes for the current detail state.
+///
+/// Off is unavailable, not zero: the session is not requested. Any other state
+/// reports `MaximumBuffers * 64 KiB`, which is a ceiling in kernel pool, not
+/// this process's private bytes.
+pub fn etw_buffer_ceiling(snapshot: &Snapshot) -> MetricValue<u64> {
+    if snapshot.cpu_detail.state == CpuDetailState::Off {
+        return MetricValue::Unavailable;
+    }
+    let processors = snapshot
+        .logical_processors
+        .as_option()
+        .map(|count| count as usize)
+        .unwrap_or(1)
+        .max(1);
+    MetricValue::Value(etw_buffer_ceiling_bytes(processors))
+}
+
+/// `(minimum, maximum)` buffers. Two per logical processor, and at least 64 maximum.
+///
+/// ETW's per-processor floor is two buffers. Shrinking that to chase a working-set
+/// target would raise `EventsLost`. The maximum stays at least 64 so a small
+/// machine still has burst room; 64 KiB times 64 buffers is 4 MiB of kernel pool.
+pub fn etw_buffer_limits(logical_processors: usize) -> (u32, u32) {
+    let processors = u32::try_from(logical_processors.max(1)).unwrap_or(u32::MAX);
+    let minimum = processors.saturating_mul(2).max(4);
+    let maximum = minimum.max(64);
+    (minimum, maximum)
+}
+
+pub fn etw_buffer_ceiling_bytes(logical_processors: usize) -> u64 {
+    let (_minimum, maximum) = etw_buffer_limits(logical_processors);
+    u64::from(maximum).saturating_mul(64).saturating_mul(1024)
+}
+
 pub fn format_local_hms(time: SystemTime) -> String {
     #[cfg(windows)]
     {
@@ -145,6 +211,23 @@ mod tests {
     #[test]
     fn non_windows_does_not_pretend_to_know_the_token() {
         assert_eq!(privilege_label(), "権限は未判定");
+    }
+
+    #[test]
+    fn etw_ceiling_is_the_configured_maximum_not_a_zero() {
+        assert_eq!(super::etw_buffer_limits(24), (48, 64));
+        assert_eq!(super::etw_buffer_ceiling_bytes(24), 64 * 64 * 1024);
+        let mut snapshot = crate::model::Snapshot::bare(1, std::time::Instant::now());
+        assert_eq!(
+            super::etw_buffer_ceiling(&snapshot),
+            crate::metric::MetricValue::Unavailable
+        );
+        snapshot.cpu_detail = crate::model::CpuDetailSnapshot::needs_admin();
+        snapshot.logical_processors = crate::metric::MetricValue::Value(24);
+        assert_eq!(
+            super::etw_buffer_ceiling(&snapshot),
+            crate::metric::MetricValue::Value(64 * 64 * 1024)
+        );
     }
 }
 

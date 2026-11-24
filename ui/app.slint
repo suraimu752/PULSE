@@ -1109,6 +1109,7 @@ export component AppWindow inherits Window {
     in-out property <int> cpu-view: 0;
     in-out property <bool> cpu-detail-on: false;
     in-out property <string> cpu-diagnostics: "";
+    in-out property <string> self-diagnostics: "";
     in-out property <string> cpu-message: "";
     in-out property <bool> cpu-admin: false;
     in-out property <[CpuCard]> cpu-cards;
@@ -1810,6 +1811,13 @@ export component AppWindow inherits Window {
                                         }
                                         if root.resource == 0 && root.cpu-diagnostics != "": Text {
                                             text: root.cpu-diagnostics;
+                                            font-size: 11px;
+                                            color: Theme.text-muted;
+                                            wrap: no-wrap;
+                                            overflow: elide;
+                                        }
+                                        if root.resource == 0 && root.self-diagnostics != "": Text {
+                                            text: root.self-diagnostics;
                                             font-size: 11px;
                                             color: Theme.text-muted;
                                             wrap: no-wrap;

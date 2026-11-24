@@ -80,7 +80,7 @@ pub fn rank(
         .enumerate()
         .map(|(index, (process, _, value, kind))| RankedProcess {
             rank: (index as u32) + 1,
-            name: process.name.clone(),
+            name: process.name.to_string(),
             pid: process.key.pid,
             creation_time_100ns: process.key.creation_time_100ns,
             value,

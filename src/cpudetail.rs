@@ -11,7 +11,7 @@ use std::time::Instant;
 
 use crate::model::{
     CpuDetailSnapshot, CpuDetailState, LogicalCpuId, LogicalCpuProcess, LogicalCpuSample,
-    ProcessKey,
+    ProcessKey, SharedName,
 };
 
 /// One ETW fact, already decoded. Times are on one monotonic clock.
@@ -80,9 +80,12 @@ struct CpuBuckets {
 pub struct SwitchLedger {
     enabled: bool,
     threads: HashMap<u32, ThreadRec>,
-    /// TIDs that have ended. A later switch without a new start stays unknown.
-    ended: HashSet<u32>,
-    names: HashMap<(u32, u64), String>,
+    /// TIDs that have ended, and the close generation when they ended.
+    /// A later switch without a new start stays unknown. Entries older than a
+    /// few intervals are dropped; forgetting one turns that switch into
+    /// Unknown, which is not a guessed process.
+    ended: HashMap<u32, u32>,
+    names: HashMap<(u32, u64), SharedName>,
     running: HashMap<LogicalCpuId, Running>,
     buckets: HashMap<LogicalCpuId, CpuBuckets>,
     expected: Vec<LogicalCpuId>,
@@ -92,6 +95,7 @@ pub struct SwitchLedger {
     events: u64,
     warmup_done: bool,
     seen_switch: bool,
+    generation: u32,
 }
 
 impl Default for SwitchLedger {
@@ -105,7 +109,7 @@ impl SwitchLedger {
         Self {
             enabled: false,
             threads: HashMap::new(),
-            ended: HashSet::new(),
+            ended: HashMap::new(),
             names: HashMap::new(),
             running: HashMap::new(),
             buckets: HashMap::new(),
@@ -116,6 +120,7 @@ impl SwitchLedger {
             events: 0,
             warmup_done: false,
             seen_switch: false,
+            generation: 0,
         }
     }
 
@@ -134,6 +139,8 @@ impl SwitchLedger {
         if !on {
             self.threads.clear();
             self.ended.clear();
+            self.names.clear();
+            self.generation = 0;
         }
     }
 
@@ -172,7 +179,7 @@ impl SwitchLedger {
     /// Identity observed outside ETW (Toolhelp at session start). Not a guess
     /// for a TID that has already ended.
     pub fn seed_thread(&mut self, tid: u32, pid: u32, create_time_100ns: u64, name: &str) {
-        if self.ended.contains(&tid) {
+        if self.ended.contains_key(&tid) {
             return;
         }
         self.note_process(pid, create_time_100ns, name);
@@ -220,7 +227,7 @@ impl SwitchLedger {
             }
             CpuEvent::ThreadEnd { tid } => {
                 self.threads.remove(&tid);
-                self.ended.insert(tid);
+                self.ended.insert(tid, self.generation);
             }
             CpuEvent::Switch {
                 time,
@@ -330,7 +337,7 @@ impl SwitchLedger {
                     .names
                     .get(&(pid, create))
                     .cloned()
-                    .unwrap_or_else(|| format!("pid {pid}"));
+                    .unwrap_or_else(|| SharedName::from(format!("pid {pid}")));
                 processes.push(LogicalCpuProcess {
                     key,
                     name,
@@ -347,6 +354,10 @@ impl SwitchLedger {
             });
         }
 
+        self.generation = self.generation.saturating_add(1);
+        self.prune_ended();
+        self.prune_names();
+        let (ledger_threads, ledger_ended, ledger_names) = self.retained();
         let nanos = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
         if lost || warmup || busy_count == 0 {
             let message = if lost {
@@ -362,6 +373,9 @@ impl SwitchLedger {
                 aggregate_nanos: nanos,
                 mean_busy_percent: None,
                 processors,
+                ledger_threads,
+                ledger_ended,
+                ledger_names,
             };
         }
         CpuDetailSnapshot {
@@ -372,15 +386,56 @@ impl SwitchLedger {
             aggregate_nanos: nanos,
             mean_busy_percent: Some(busy_sum / busy_count as f64),
             processors,
+            ledger_threads,
+            ledger_ended,
+            ledger_names,
         }
+    }
+
+    fn retained(&self) -> (u32, u32, u32) {
+        (
+            u32::try_from(self.threads.len()).unwrap_or(u32::MAX),
+            u32::try_from(self.ended.len()).unwrap_or(u32::MAX),
+            u32::try_from(self.names.len()).unwrap_or(u32::MAX),
+        )
+    }
+
+    /// Drop ended-thread marks after four closes, and never keep an unbounded set.
+    fn prune_ended(&mut self) {
+        const KEEP: u32 = 4;
+        const CAP: usize = 8_192;
+        if self.ended.len() > CAP {
+            self.ended.clear();
+            return;
+        }
+        let generation = self.generation;
+        self.ended
+            .retain(|_, ended_at| generation.saturating_sub(*ended_at) <= KEEP);
+    }
+
+    /// Names are only needed for threads that are still running.
+    fn prune_names(&mut self) {
+        let live: HashSet<(u32, u64)> = self
+            .threads
+            .values()
+            .map(|thread| (thread.pid, thread.create_time_100ns))
+            .collect();
+        self.names.retain(|key, _| live.contains(key));
     }
 
     fn note_process(&mut self, pid: u32, create_time_100ns: u64, name: &str) {
         if name.is_empty() {
             return;
         }
-        self.names
-            .insert((pid, create_time_100ns), name.to_string());
+        let key = (pid, create_time_100ns);
+        if self
+            .names
+            .get(&key)
+            .is_some_and(|existing| existing.as_str() == name)
+        {
+            return;
+        }
+        self.names.insert(key, SharedName::from(name));
     }
 
     fn ensure_start(&mut self, time: u64) {
@@ -393,7 +448,7 @@ impl SwitchLedger {
         if tid == 0 {
             return Kind::Idle;
         }
-        if self.ended.contains(&tid) && !self.threads.contains_key(&tid) {
+        if self.ended.contains_key(&tid) && !self.threads.contains_key(&tid) {
             return Kind::Unknown;
         }
         match self.threads.get(&tid) {
@@ -1019,9 +1074,51 @@ mod tests {
                 pid,
                 creation_time_100ns: create,
             },
-            name: name.to_string(),
+            name: SharedName::from(name),
             cpu_time_100ns: time,
             percent: time as f64,
         }
+    }
+
+    #[test]
+    fn ended_threads_and_exited_names_do_not_stay_forever() {
+        let mut ledger = SwitchLedger::new();
+        ledger.set_enabled(true);
+        ledger.push(CpuEvent::ThreadStart {
+            tid: 7,
+            pid: 1,
+            create_time_100ns: 10,
+        });
+        ledger.push(CpuEvent::ProcessStart {
+            pid: 1,
+            create_time_100ns: 10,
+            name: "live.exe".to_string(),
+        });
+        ledger.push(CpuEvent::ProcessStart {
+            pid: 2,
+            create_time_100ns: 20,
+            name: "gone.exe".to_string(),
+        });
+        ledger.push(CpuEvent::ThreadStart {
+            tid: 8,
+            pid: 2,
+            create_time_100ns: 20,
+        });
+        ledger.push(CpuEvent::ThreadEnd { tid: 8 });
+        let _ = ledger.close(1_000);
+        assert_eq!(ledger.names.len(), 1, "exited process name should leave");
+        assert!(ledger.ended.contains_key(&8));
+        for step in 2..8 {
+            let _ = ledger.close(step * 1_000);
+        }
+        assert!(
+            !ledger.ended.contains_key(&8),
+            "an ended tid should be forgotten after a few intervals"
+        );
+        assert_eq!(ledger.threads.len(), 1);
+        ledger.set_enabled(false);
+        assert!(ledger.names.is_empty());
+        assert!(ledger.threads.is_empty());
+        assert!(ledger.ended.is_empty());
     }
 }

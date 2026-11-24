@@ -2,6 +2,7 @@
 //! resolves the same names. The first collect often has no data; that is not a zero.
 
 use std::cell::Cell;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use windows::Win32::System::Performance::{
     PdhAddEnglishCounterW, PdhCloseQuery, PdhCollectQueryData, PdhGetFormattedCounterArrayW,
@@ -11,6 +12,17 @@ use windows::Win32::System::Performance::{
     PDH_FMT_COUNTERVALUE_ITEM_W, PDH_FMT_DOUBLE, PDH_HCOUNTER, PDH_HQUERY, PDH_INVALID_DATA,
     PDH_MORE_DATA, PDH_NO_DATA,
 };
+
+static REOPENS: AtomicU32 = AtomicU32::new(0);
+
+/// How many queries have been dropped after [`PdhQuery::should_reopen`].
+pub fn reopen_count() -> u32 {
+    REOPENS.load(Ordering::Relaxed)
+}
+
+pub fn note_reopen() {
+    REOPENS.fetch_add(1, Ordering::Relaxed);
+}
 
 pub enum PdhSample {
     /// Counter exists and this interval produced instances (possibly empty).
@@ -246,10 +258,12 @@ fn wide_string(pointer: windows::core::PWSTR) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::keeps_query;
+    use super::{keeps_query, note_reopen, note_status, reopen_count, CollectStep, PdhQuery};
+    use std::cell::Cell;
     use windows::Win32::System::Performance::{
         PDH_CALC_NEGATIVE_VALUE, PDH_CSTATUS_INVALID_DATA, PDH_CSTATUS_NO_COUNTER,
-        PDH_CSTATUS_NO_INSTANCE, PDH_CSTATUS_NO_OBJECT, PDH_INVALID_DATA, PDH_NO_DATA,
+        PDH_CSTATUS_NO_INSTANCE, PDH_CSTATUS_NO_OBJECT, PDH_HCOUNTER, PDH_HQUERY, PDH_INVALID_DATA,
+        PDH_NO_DATA,
     };
 
     #[test]
@@ -261,5 +275,40 @@ mod tests {
         assert!(keeps_query(PDH_CALC_NEGATIVE_VALUE));
         assert!(!keeps_query(PDH_CSTATUS_NO_OBJECT));
         assert!(!keeps_query(PDH_CSTATUS_NO_COUNTER));
+    }
+
+    #[test]
+    fn three_hard_failures_ask_for_a_new_query_and_a_gap_does_not() {
+        let query = PdhQuery {
+            query: PDH_HQUERY::default(),
+            counter: PDH_HCOUNTER::default(),
+            last_status: Cell::new(0),
+            hard_failures: Cell::new(0),
+        };
+        assert!(!query.should_reopen());
+        assert!(matches!(
+            note_status(&query, PDH_NO_DATA),
+            CollectStep::NoData
+        ));
+        assert!(!query.should_reopen());
+        assert!(matches!(
+            note_status(&query, PDH_CSTATUS_NO_OBJECT),
+            CollectStep::Failed
+        ));
+        assert!(matches!(
+            note_status(&query, PDH_CSTATUS_NO_OBJECT),
+            CollectStep::Failed
+        ));
+        assert!(!query.should_reopen());
+        assert!(matches!(
+            note_status(&query, PDH_CSTATUS_NO_COUNTER),
+            CollectStep::Failed
+        ));
+        assert!(query.should_reopen());
+        let before = reopen_count();
+        note_reopen();
+        assert_eq!(reopen_count(), before + 1);
+        // Drop closes only a live query. A default handle must not be closed.
+        assert!(query.query.is_invalid());
     }
 }

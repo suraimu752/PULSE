@@ -46,7 +46,42 @@ fn embed_res(manifest: &std::path::Path) -> Result<(), String> {
         std::path::PathBuf::from(std::env::var("OUT_DIR").map_err(|error| error.to_string())?);
     let copied = out.join("pulse.exe.manifest");
     std::fs::copy(manifest, &copied).map_err(|error| error.to_string())?;
-    let rc_text = "1 24 \"pulse.exe.manifest\"\r\n";
+    let version = std::env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "0.0.0".to_string());
+    let mut numbers = version
+        .split('.')
+        .filter_map(|part| part.parse::<u16>().ok());
+    let major = numbers.next().unwrap_or(0);
+    let minor = numbers.next().unwrap_or(0);
+    let patch = numbers.next().unwrap_or(0);
+    let rc_text = format!(
+        "1 24 \"pulse.exe.manifest\"\r\n\
+         1 VERSIONINFO\r\n\
+         FILEVERSION {major},{minor},{patch},0\r\n\
+         PRODUCTVERSION {major},{minor},{patch},0\r\n\
+         FILEFLAGSMASK 0x3fL\r\n\
+         FILEFLAGS 0x0L\r\n\
+         FILEOS 0x40004L\r\n\
+         FILETYPE 0x1L\r\n\
+         BEGIN\r\n\
+           BLOCK \"StringFileInfo\"\r\n\
+           BEGIN\r\n\
+             BLOCK \"040904B0\"\r\n\
+             BEGIN\r\n\
+               VALUE \"CompanyName\", \"PULSE contributors\"\r\n\
+               VALUE \"FileDescription\", \"PULSE - a lightweight Windows 11 task manager\"\r\n\
+               VALUE \"FileVersion\", \"{version}\"\r\n\
+               VALUE \"InternalName\", \"PULSE\"\r\n\
+               VALUE \"OriginalFilename\", \"PULSE.exe\"\r\n\
+               VALUE \"ProductName\", \"PULSE\"\r\n\
+               VALUE \"ProductVersion\", \"{version}\"\r\n\
+             END\r\n\
+           END\r\n\
+           BLOCK \"VarFileInfo\"\r\n\
+           BEGIN\r\n\
+             VALUE \"Translation\", 0x409, 1200\r\n\
+           END\r\n\
+         END\r\n"
+    );
     std::fs::write(out.join("pulse.rc"), rc_text).map_err(|error| error.to_string())?;
     let rc_exe = find_rc().ok_or_else(|| "rc.exe was not found".to_string())?;
     let status = std::process::Command::new(&rc_exe)

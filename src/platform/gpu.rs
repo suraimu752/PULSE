@@ -138,6 +138,7 @@ impl MetricEnricher for GpuEnricher {
                 // Drop the engine query only after repeated hard failures.
                 // Memory counters stay on their own queries.
                 if reopen {
+                    super::pdh::note_reopen();
                     self.engines = None;
                 }
                 if self.confirmed_empty && !self.saw_engine {
@@ -269,6 +270,7 @@ fn collect_bytes(slot: &mut Option<PdhQuery>) -> Option<Vec<(String, f64)>> {
         }
     };
     if reopen {
+        super::pdh::note_reopen();
         *slot = None;
     }
     values

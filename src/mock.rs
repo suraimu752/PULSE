@@ -35,6 +35,10 @@ pub enum Scenario {
     Cpus32,
     /// Detailed analysis is refused. Overall CPU still runs.
     CpusDenied,
+    /// Five hundred processes, for sort and scroll checks.
+    FiveHundred,
+    /// Two thousand processes, for the upper list-size check.
+    TwoThousand,
 }
 
 impl Scenario {
@@ -48,6 +52,8 @@ impl Scenario {
             "cpus" => Some(Self::Cpus),
             "cpus32" => Some(Self::Cpus32),
             "cpus-denied" => Some(Self::CpusDenied),
+            "p500" => Some(Self::FiveHundred),
+            "p2000" => Some(Self::TwoThousand),
             _ => None,
         }
     }
@@ -420,7 +426,9 @@ fn adapter_rows(
 fn actors(scenario: Scenario) -> Vec<Actor> {
     match scenario {
         Scenario::Normal => crowd(100, false),
+        Scenario::FiveHundred => crowd(500, false),
         Scenario::Many => crowd(1000, true),
+        Scenario::TwoThousand => crowd(2000, true),
         Scenario::Gaps => gaps(),
         Scenario::Special => special(),
         Scenario::History => history_cast(),
@@ -475,6 +483,9 @@ fn script_cpus(step: u64, count: u16, denied: bool, enabled: bool) -> CpuDetailS
         aggregate_nanos: 35_000,
         mean_busy_percent: Some(busy / f64::from(count.max(1))),
         processors,
+        ledger_threads: 0,
+        ledger_ended: 0,
+        ledger_names: 0,
     }
 }
 
@@ -486,7 +497,7 @@ fn script_rows(cpu: u16, step: u64) -> Vec<LogicalCpuProcess> {
                 pid,
                 creation_time_100ns: create,
             },
-            name: name.to_string(),
+            name: crate::model::SharedName::from(name),
             cpu_time_100ns: ((percent / 100.0) * 5_000_000.0).round() as u64,
             percent,
         });
@@ -754,6 +765,20 @@ mod tests {
         let mut many = MockProbe::new(Scenario::Many);
         let many_sample = many.probe();
         assert_eq!(many_sample.processes.len(), 1000);
+        assert_eq!(
+            MockProbe::new(Scenario::FiveHundred)
+                .probe()
+                .processes
+                .len(),
+            500
+        );
+        assert_eq!(
+            MockProbe::new(Scenario::TwoThousand)
+                .probe()
+                .processes
+                .len(),
+            2000
+        );
         assert!(many_sample.processes[0].name.chars().count() > 40);
         let pids: std::collections::HashSet<_> =
             many_sample.processes.iter().map(|p| p.pid).collect();
@@ -797,7 +822,7 @@ mod tests {
         let mut saw_both = false;
         for _ in 0..100 {
             let raw = probe.probe();
-            let snapshot = aggregate(previous.as_ref(), &raw);
+            let snapshot = aggregate(previous.as_ref(), &raw, &mut crate::names::NameTable::new());
             if let MetricValue::Value(cpu) = snapshot.cpu_percent {
                 if cpu > 70.0 {
                     saw_peak = true;
@@ -876,7 +901,12 @@ mod tests {
         );
         assert!(denied_sample.cpu_detail.processors.is_empty());
         assert!(matches!(
-            aggregate(Some(&first), &denied_sample).cpu_percent,
+            aggregate(
+                Some(&first),
+                &denied_sample,
+                &mut crate::names::NameTable::new(),
+            )
+            .cpu_percent,
             MetricValue::Value(_)
         ));
 
