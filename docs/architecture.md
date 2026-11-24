@@ -40,7 +40,8 @@ Windows API / PDH / GetIfTable2
 | `src/platform/etw.rs` | 専用セッション `PULSE-CPU`。コンテキストスイッチを区間集計する。他のセッションは止めない |
 | `src/cpudetail.rs` | 論理 CPU の台帳。スイッチ、移動、区間境界、PID と TID の再利用。UI からは順位だけ使う |
 | `src/platform/disk.rs` | GetProcessIoCounters と PhysicalDisk PDH。物理転送量とは別 |
-| `src/platform/network.rs` | GetIfTable2。プロセス帰属はしない |
+| `src/platform/network.rs` | GetIfTable2。フィルタは捨てる。プロセス帰属は未実装 |
+| `src/netadapter.rs` | 残すインタフェースの判定。InOctets は受信 |
 | `src/platform/gpu.rs` | GPU Engine と GPU Process/Adapter Memory。使用率は最大 |
 | `src/devices.rs` | デバイスごとの読み書きを、欠けを 0 にせず合わせる |
 | `src/platform/stub.rs` | Windows 以外。数値を作らない |
@@ -70,4 +71,8 @@ UI は `SamplerHandle` の `SharedLatest`（`Mutex` で包んだ `Arc<PublishedS
 
 論理 CPU のグラフは、画面に近いカードだけ棒を作る。スクロールで外れたカードは見出しだけ残す。
 
-プロセスハンドルはサンプルをまたいで保持しない。各周期で開き、読んで、閉じる。呼び出し回数の削減は後のフェーズで扱う。
+プロセスハンドルはサンプルをまたいで保持しない。各周期で開き、読んで、閉じる。プロセス名の文字列だけは `Arc` で履歴の枠が共有する。
+
+ウィンドウが最小化されているあいだ、UI はモデルを更新しない。サンプラーは 500 ms のまま動き、リングも進む。
+
+CPU ページの 2 行目は、このプロセスのワーキングセット、プライベートバイト、ハンドル、スレッド、リングの上限見積もり、ETW バッファの設定上限、PDH を開き直した回数である。プロセス列のメモリはプライベートワーキングセットのままである。

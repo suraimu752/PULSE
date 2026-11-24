@@ -75,10 +75,34 @@ jobs:
           if ($ascii.Contains('level="asInvoker"') -or $utf16.Contains('level="asInvoker"')) {
             throw "PULSE.exe still requests asInvoker"
           }
-          Write-Host "embedded requireAdministrator manifest: ok ($($bytes.Length) bytes)"
+          $version = (Select-String -Path Cargo.toml -Pattern '^version = "([^"]+)"').Matches[0].Groups[1].Value
+          if (($ascii.IndexOf($version) -lt 0) -and ($utf16.IndexOf($version) -lt 0)) {
+            throw "PULSE.exe is missing FileVersion $version"
+          }
+          if (($ascii.IndexOf("ProductName") -lt 0) -and ($utf16.IndexOf("ProductName") -lt 0)) {
+            throw "PULSE.exe is missing VERSIONINFO ProductName"
+          }
+          Write-Host "embedded requireAdministrator manifest: ok ($($bytes.Length) bytes, $version)"
+      - name: Zip PULSE.exe with its SHA-256
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item target/release/PULSE.exe dist/PULSE.exe
+          $hash = (Get-FileHash dist/PULSE.exe -Algorithm SHA256).Hash.ToLower()
+          Set-Content -Path dist/SHA256SUMS.txt -Encoding ascii -Value "$hash  PULSE.exe"
+          Compress-Archive -Path dist/PULSE.exe, dist/SHA256SUMS.txt -DestinationPath PULSE-windows-x64.zip -Force
+          Write-Host "SHA256 $hash"
       - name: Upload PULSE.exe
         uses: actions/upload-artifact@v4
         with:
           name: PULSE-windows-x64
           path: target/release/PULSE.exe
+          if-no-files-found: error
+      - name: Upload unsigned zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: PULSE-windows-x64-zip
+          path: |
+            PULSE-windows-x64.zip
+            dist/SHA256SUMS.txt
           if-no-files-found: error

@@ -20,10 +20,11 @@ use windows::Win32::System::SystemInformation::{
     GetLocalTime, GetSystemInfo, GlobalMemoryStatusEx, MEMORYSTATUSEX, SYSTEM_INFO,
 };
 use windows::Win32::System::Threading::{
-    GetActiveProcessorCount, GetCurrentProcess, GetProcessTimes, GetSystemTimes, OpenProcess,
-    ALL_PROCESSOR_GROUPS, PROCESS_QUERY_LIMITED_INFORMATION,
+    GetActiveProcessorCount, GetCurrentProcess, GetProcessHandleCount, GetProcessTimes,
+    GetSystemTimes, OpenProcess, ALL_PROCESSOR_GROUPS, PROCESS_QUERY_LIMITED_INFORMATION,
 };
 
+use crate::accessnote::{access_warning, bucket, AccessBucket, AccessCounts};
 use crate::collector::SystemProbe;
 use crate::config::MEMORY_SAMPLE_INTERVAL;
 use crate::metric::MetricValue;
@@ -91,6 +92,7 @@ pub struct WindowsSystemProbe {
     /// its ordinary working set is large. That pattern means the EX2 field was
     /// not filled, so showing zero would be wrong.
     private_working_set_unavailable: bool,
+    self_threads: MetricValue<u32>,
 }
 
 impl WindowsSystemProbe {
@@ -99,10 +101,11 @@ impl WindowsSystemProbe {
             last_memory_refresh: None,
             memory_cache: HashMap::new(),
             private_working_set_unavailable: false,
+            self_threads: MetricValue::Unavailable,
         }
     }
 
-    fn read_processes(&mut self) -> Result<(Vec<RawProcess>, Option<String>), String> {
+    fn read_processes(&mut self) -> Result<(Vec<RawProcess>, Option<String>, bool), String> {
         let refresh_memory = match self.last_memory_refresh {
             Some(at) => at.elapsed() >= MEMORY_SAMPLE_INTERVAL,
             None => true,
@@ -126,17 +129,26 @@ impl WindowsSystemProbe {
 
         let mut processes = Vec::new();
         let mut live = HashSet::new();
-        let mut denied = 0u32;
+        let mut needs_admin = 0u32;
+        let mut protected = 0u32;
+        let mut other = 0u32;
+        let elevated = token_is_elevated() == Some(true);
+        let mut saw_self = false;
+        let self_pid = std::process::id();
         loop {
             if processes.len() >= MAX_PROCESSES {
                 break;
             }
             let pid = entry.th32ProcessID;
+            if pid == self_pid {
+                saw_self = true;
+                self.self_threads = MetricValue::Value(entry.cntThreads);
+            }
             let parent_pid = entry.th32ParentProcessID;
             let name = display_name(pid, wide_to_string(&entry.szExeFile));
             let mut process = RawProcess::new(pid, parent_pid, name);
             match open_process(pid) {
-                Some(handle) => {
+                Ok(handle) => {
                     if let Some((creation, cpu)) = process_cpu(&handle) {
                         process.creation_time_100ns = Some(creation);
                         process.cpu_time_100ns = MetricValue::Value(cpu);
@@ -145,8 +157,12 @@ impl WindowsSystemProbe {
                     let memory = self.memory_for(&handle, pid, key, refresh_memory);
                     process.memory_bytes = memory;
                 }
-                None => {
-                    denied = denied.saturating_add(1);
+                Err(failure) => {
+                    match bucket(elevated, matches!(failure, OpenFailure::Denied)) {
+                        AccessBucket::NeedsAdmin => needs_admin = needs_admin.saturating_add(1),
+                        AccessBucket::Protected => protected = protected.saturating_add(1),
+                        AccessBucket::Other => other = other.saturating_add(1),
+                    }
                     let key = process.key();
                     process.memory_bytes = self
                         .memory_cache
@@ -166,6 +182,9 @@ impl WindowsSystemProbe {
             }
         }
 
+        if !saw_self {
+            self.self_threads = MetricValue::Unavailable;
+        }
         self.stamp_self(&mut processes);
         if refresh_memory {
             self.last_memory_refresh = Some(Instant::now());
@@ -181,16 +200,19 @@ impl WindowsSystemProbe {
             self.memory_cache.retain(|key, _| live.contains(key));
         }
 
-        let warning = if self.private_working_set_unavailable {
-            Some("プロセスメモリは N/A です。".to_string())
-        } else if denied > 0 {
-            Some(format!(
-                "{denied} 件のプロセスは権限不足のため CPU またはメモリを計測できませんでした"
-            ))
+        let (warning, quiet) = if self.private_working_set_unavailable {
+            (Some("プロセスメモリは N/A です。".to_string()), false)
         } else {
-            None
+            match access_warning(AccessCounts {
+                needs_admin,
+                protected,
+                other,
+            }) {
+                Some(note) => (Some(note.text), note.quiet),
+                None => (None, false),
+            }
         };
-        Ok((processes, warning))
+        Ok((processes, warning, quiet))
     }
 
     fn memory_for(
@@ -232,6 +254,10 @@ impl WindowsSystemProbe {
 }
 
 impl SystemProbe for WindowsSystemProbe {
+    fn self_threads(&self) -> MetricValue<u32> {
+        self.self_threads
+    }
+
     fn probe(&mut self) -> RawSample {
         let mut sample = RawSample::empty(Instant::now(), std::time::SystemTime::now());
         let (busy, total) = read_system_cpu();
@@ -242,9 +268,10 @@ impl SystemProbe for WindowsSystemProbe {
         sample.memory_total_bytes = total_bytes;
         sample.memory_available_bytes = available_bytes;
         match self.read_processes() {
-            Ok((processes, warning)) => {
+            Ok((processes, warning, quiet)) => {
                 sample.processes = processes;
                 sample.warning = warning;
+                sample.warning_quiet = quiet;
             }
             Err(message) => {
                 let mut processes = Vec::new();
@@ -283,13 +310,27 @@ impl Drop for OwnedHandle {
     }
 }
 
-fn open_process(pid: u32) -> Option<OwnedHandle> {
+enum OpenFailure {
+    Denied,
+    Other,
+}
+
+fn open_process(pid: u32) -> Result<OwnedHandle, OpenFailure> {
     // SAFETY: the access mask asks only for query rights. The handle is owned.
-    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }.ok()?;
-    if handle.is_invalid() {
-        return None;
+    match unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) } {
+        Ok(handle) if !handle.is_invalid() => Ok(OwnedHandle(handle)),
+        Ok(_) => Err(OpenFailure::Other),
+        Err(err) => Err(if is_access_denied(&err) {
+            OpenFailure::Denied
+        } else {
+            OpenFailure::Other
+        }),
     }
-    Some(OwnedHandle(handle))
+}
+
+fn is_access_denied(err: &windows::core::Error) -> bool {
+    let code = err.code().0 as u32;
+    code == 5 || code == 0x8007_0005
 }
 
 fn process_cpu(handle: &OwnedHandle) -> Option<(u64, u64)> {
@@ -310,6 +351,43 @@ fn process_times(handle: HANDLE) -> Option<(u64, u64)> {
     }
     let cpu = filetime_to_u64(kernel).saturating_add(filetime_to_u64(user));
     Some((filetime_to_u64(creation), cpu))
+}
+
+/// Counters for this process via the pseudo-handle. That handle is not closed.
+pub fn read_self_usage() -> crate::selfmeter::SelfDiagnostics {
+    let mut diag = crate::selfmeter::SelfDiagnostics::unavailable();
+    let handle = unsafe { GetCurrentProcess() };
+    let mut counters = PROCESS_MEMORY_COUNTERS_EX2 {
+        cb: u32::try_from(size_of::<PROCESS_MEMORY_COUNTERS_EX2>()).unwrap_or(0),
+        ..PROCESS_MEMORY_COUNTERS_EX2::default()
+    };
+    let status = unsafe {
+        GetProcessMemoryInfo(
+            handle,
+            std::ptr::from_mut(&mut counters).cast::<PROCESS_MEMORY_COUNTERS>(),
+            counters.cb,
+        )
+    };
+    if status.is_ok() {
+        if let Ok(bytes) = u64::try_from(counters.WorkingSetSize) {
+            diag.working_set = MetricValue::Value(bytes);
+        }
+        if let Ok(bytes) = u64::try_from(counters.PrivateUsage) {
+            diag.private_bytes = MetricValue::Value(bytes);
+        }
+        // A zero private working set beside a real working set means the field
+        // was not filled. Leave it unavailable instead of publishing that zero.
+        if counters.PrivateWorkingSetSize > 0 || counters.WorkingSetSize < 1024 * 1024 {
+            if let Ok(bytes) = u64::try_from(counters.PrivateWorkingSetSize) {
+                diag.private_working_set = MetricValue::Value(bytes);
+            }
+        }
+    }
+    let mut handles = 0u32;
+    if unsafe { GetProcessHandleCount(handle, &mut handles) }.is_ok() {
+        diag.handles = MetricValue::Value(handles);
+    }
+    diag
 }
 
 fn read_private_working_set(handle: HANDLE, pid: u32, broken: &mut bool) -> MetricValue<u64> {
@@ -472,7 +550,8 @@ mod tests {
             std::hint::spin_loop();
         }
         let second = probe.probe();
-        let snapshot = crate::aggregate::aggregate(Some(&first), &second);
+        let snapshot =
+            crate::aggregate::aggregate(Some(&first), &second, &mut crate::names::NameTable::new());
         assert!(
             matches!(snapshot.cpu_percent, MetricValue::Value(_)),
             "system CPU should be computable after two real samples"

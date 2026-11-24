@@ -13,7 +13,9 @@ use crate::history::align_timeline;
 use crate::history::RingBuffer;
 use crate::metric::MetricValue;
 use crate::model::Snapshot;
+use crate::names::NameTable;
 use crate::platform;
+use crate::selfmeter::{estimate_ring_bytes, SelfDiagnostics};
 use crate::series::{chart_history, ChartHistory};
 
 /// What the UI thread is allowed to read.
@@ -31,6 +33,8 @@ pub struct PublishedSample {
     pub self_memory: MetricValue<u64>,
     pub updated_text: String,
     pub demo: bool,
+    /// This process and the sampler's own costs. Not a stand-in for other processes.
+    pub diag: SelfDiagnostics,
 }
 
 #[derive(Clone)]
@@ -68,6 +72,7 @@ pub struct SamplerCore {
     history: RingBuffer<Arc<Snapshot>>,
     sequence: u64,
     demo: bool,
+    names: NameTable,
 }
 
 impl SamplerCore {
@@ -79,6 +84,7 @@ impl SamplerCore {
             history: RingBuffer::with_capacity(history_capacity()),
             sequence: 0,
             demo: false,
+            names: NameTable::new(),
         }
     }
 
@@ -88,12 +94,19 @@ impl SamplerCore {
     }
 
     pub fn tick(&mut self) -> PublishedSample {
+        let step_started = Instant::now();
+        let probe_started = Instant::now();
         let mut raw = self.probe.probe();
+        let probe_nanos = nanos(probe_started.elapsed());
+        let threads = self.probe.self_threads();
+        let mut enrich_nanos = 0u64;
         for enricher in &mut self.enrichers {
             let id = enricher.id();
+            let enrich_started = Instant::now();
             let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 enricher.enrich(&mut raw);
             }));
+            enrich_nanos = enrich_nanos.saturating_add(nanos(enrich_started.elapsed()));
             if caught.is_err() {
                 let note = format!("{id} failed");
                 raw.warning = Some(match raw.warning.take() {
@@ -102,21 +115,37 @@ impl SamplerCore {
                 });
             }
         }
-        let mut snapshot = aggregate(self.previous.as_ref(), &raw);
+        self.names.begin();
+        let mut snapshot = aggregate(self.previous.as_ref(), &raw, &mut self.names);
+        self.names.end();
         self.sequence = self.sequence.saturating_add(1);
         snapshot.sequence = self.sequence;
         let updated_text = platform::format_local_hms(snapshot.taken_at);
         let snapshot = Arc::new(snapshot);
         self.history.push(Arc::clone(&snapshot));
+        let mut diag = platform::read_self_usage();
+        diag.threads = threads;
+        diag.sample_nanos = nanos(step_started.elapsed());
+        diag.probe_nanos = probe_nanos;
+        diag.enrich_nanos = enrich_nanos;
+        diag.pdh_reopens = platform::pdh_reopen_count();
+        diag.ring_slots = u32::try_from(self.history.len()).unwrap_or(u32::MAX);
+        diag.ring_bytes = estimate_ring_bytes(&snapshot, self.history.len());
+        diag.etw_buffer_ceiling = platform::etw_buffer_ceiling(&snapshot);
         let published = publish(
             &self.history,
             Arc::clone(&snapshot),
             updated_text,
             self.demo,
+            diag,
         );
         self.previous = Some(raw);
         published
     }
+}
+
+fn nanos(elapsed: std::time::Duration) -> u64 {
+    u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX)
 }
 
 pub struct SamplerHandle {
@@ -266,6 +295,7 @@ fn publish(
     snapshot: Arc<Snapshot>,
     updated_text: String,
     demo: bool,
+    diag: SelfDiagnostics,
 ) -> PublishedSample {
     let charts = chart_history(
         history.iter().map(|sample| sample.as_ref()),
@@ -282,6 +312,7 @@ fn publish(
         self_memory,
         updated_text,
         demo,
+        diag,
         snapshot,
     }
 }
@@ -513,5 +544,46 @@ mod tests {
             vec![100, 200, 300]
         );
         assert!(rows.iter().all(|row| row.value != "N/A"));
+    }
+
+    #[test]
+    fn a_long_run_shares_names_and_does_not_grow_the_ring() {
+        let mut core = SamplerCore::new(
+            Box::new(ScriptedProbe {
+                ticks: 0,
+                start: Instant::now(),
+            }),
+            Vec::new(),
+        );
+        let mut shared = None;
+        let mut published = core.tick();
+        for _ in 0..150 {
+            published = core.tick();
+            let name = published.snapshot.processes[0].name.as_arc().clone();
+            if let Some(previous) = &shared {
+                assert!(std::sync::Arc::ptr_eq(previous, &name));
+            } else {
+                shared = Some(name);
+            }
+        }
+        assert_eq!(core.history.len(), 120);
+        assert_eq!(core.names.len(), 1);
+        assert_eq!(published.diag.ring_slots, 120);
+        assert!(published.diag.ring_bytes > 0);
+        assert_eq!(published.diag.etw_buffer_ceiling, MetricValue::Unavailable);
+        // A real handle count is not zero. Platforms that cannot read it stay unavailable.
+        #[cfg(windows)]
+        {
+            assert!(matches!(published.diag.handles, MetricValue::Value(count) if count > 0));
+            assert!(matches!(
+                published.diag.private_bytes,
+                MetricValue::Value(_)
+            ));
+        }
+        #[cfg(not(windows))]
+        {
+            assert_eq!(published.diag.handles, MetricValue::Unavailable);
+            assert_eq!(published.diag.private_bytes, MetricValue::Unavailable);
+        }
     }
 }

@@ -9,6 +9,12 @@ use crate::model::RawSample;
 /// Reads the process list and the system counters the aggregator understands.
 pub trait SystemProbe: Send {
     fn probe(&mut self) -> RawSample;
+
+    /// Thread count of this process from the same enumeration, when it was seen.
+    /// The default is unavailable, not zero.
+    fn self_threads(&self) -> crate::metric::MetricValue<u32> {
+        crate::metric::MetricValue::Unavailable
+    }
 }
 
 /// Fills metrics the base probe leaves as [`crate::metric::MetricValue::Unsupported`].

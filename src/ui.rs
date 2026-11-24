@@ -15,7 +15,9 @@ use crate::pick::{
     axis_of, displayed, format_age, index_to_fraction, select_slot, slot_of_id, AxisSample,
     SelectionState,
 };
-use crate::present::{present_cards, present_detail_at, present_rows, status_line, PresentedRow};
+use crate::present::{
+    adapter_lines, present_cards, present_detail_at, present_rows, status_line, PresentedRow,
+};
 use crate::rank::{empty_rank_text, rank, rank_caption, RankStatus};
 use crate::sampler::{PublishedSample, SamplerHandle};
 use crate::series::{graph_points, logical_cpu_series, scale_peak, scale_percent, ChartHistory};
@@ -38,6 +40,10 @@ struct UiState {
     sort_desc: bool,
     resource: ResourceId,
     last_sequence: Option<u64>,
+    /// Sequence last copied into the process table. The performance page skips that copy.
+    rows_for: Option<u64>,
+    /// Sequence last copied into the performance graphs.
+    perf_for: Option<u64>,
     selection: SelectionState,
     timeline: Vec<Option<Arc<Snapshot>>>,
     adapter: Option<u64>,
@@ -63,6 +69,7 @@ struct UiState {
     gpu_decode_spark: Rc<VecModel<f32>>,
     vram_spark: Rc<VecModel<f32>>,
     shared_spark: Rc<VecModel<f32>>,
+    adapters: Rc<VecModel<AdapterLine>>,
 }
 
 pub fn run(options: LaunchOptions) -> Result<(), String> {
@@ -93,6 +100,8 @@ pub fn run(options: LaunchOptions) -> Result<(), String> {
         sort_desc: true,
         resource: ResourceId::from_index(options.resource.unwrap_or(0)),
         last_sequence: None,
+        rows_for: None,
+        perf_for: None,
         selection: SelectionState::live(),
         timeline: Vec::new(),
         adapter: None,
@@ -121,6 +130,7 @@ pub fn run(options: LaunchOptions) -> Result<(), String> {
         gpu_decode_spark: Rc::new(VecModel::from(Vec::<f32>::new())),
         vram_spark: Rc::new(VecModel::from(Vec::<f32>::new())),
         shared_spark: Rc::new(VecModel::from(Vec::<f32>::new())),
+        adapters: Rc::new(VecModel::from(Vec::<AdapterLine>::new())),
     }));
     {
         let state = state.borrow();
@@ -136,6 +146,7 @@ pub fn run(options: LaunchOptions) -> Result<(), String> {
         ui.set_gpu_decode_spark(ModelRc::from(state.gpu_decode_spark.clone()));
         ui.set_vram_spark(ModelRc::from(state.vram_spark.clone()));
         ui.set_shared_spark(ModelRc::from(state.shared_spark.clone()));
+        ui.set_adapters(ModelRc::from(state.adapters.clone()));
         ui.set_cpu_series(ModelRc::from(state.cpu_series.clone()));
         ui.set_cpu_slots(ModelRc::new(VecModel::from(
             (0..i32::try_from(history_capacity()).unwrap_or(120)).collect::<Vec<_>>(),
@@ -554,6 +565,7 @@ fn paint_logical(ui: &AppWindow, state: &Rc<RefCell<UiState>>, sample: &Publishe
     };
     if resource != ResourceId::Cpu {
         ui.set_cpu_diagnostics("".into());
+        ui.set_self_diagnostics("".into());
         ui.set_cpu_message("".into());
         ui.set_cpu_admin(false);
         ui.set_cpu_cards(ModelRc::new(VecModel::from(Vec::<CpuCard>::new())));
@@ -561,6 +573,7 @@ fn paint_logical(ui: &AppWindow, state: &Rc<RefCell<UiState>>, sample: &Publishe
     }
     let ui_nanos = state.borrow().ui_nanos;
     ui.set_cpu_diagnostics(cpu_diagnostics(sample, ui_nanos, on).into());
+    ui.set_self_diagnostics(self_diagnostics(sample).into());
     if !logical {
         ui.set_cpu_message("".into());
         ui.set_cpu_admin(false);
@@ -699,6 +712,14 @@ fn sync_cpu_series(
     state.borrow().cpu_series.set_vec(flat);
 }
 
+fn count_text(value: crate::metric::MetricValue<u32>) -> String {
+    match value {
+        crate::metric::MetricValue::Value(number) => number.to_string(),
+        crate::metric::MetricValue::Unavailable => "N/A".to_string(),
+        crate::metric::MetricValue::Unsupported => "未対応".to_string(),
+    }
+}
+
 fn cpu_diagnostics(sample: &PublishedSample, ui_nanos: u64, toggle_on: bool) -> String {
     let detail = &sample.snapshot.cpu_detail;
     let state = match detail.state {
@@ -725,6 +746,27 @@ fn cpu_diagnostics(sample: &PublishedSample, ui_nanos: u64, toggle_on: bool) -> 
     )
 }
 
+fn self_diagnostics(sample: &PublishedSample) -> String {
+    let diag = &sample.diag;
+    let detail = &sample.snapshot.cpu_detail;
+    let prefix = if sample.demo { "DEMO 自己" } else { "自己" };
+    format!(
+        "{prefix}  計測 {} µs  WS {}  プライベート {}  ハンドル {}  スレッド {}  リング {}枠 ~{}  ETW上限 {}  台帳 {}/{}/{}  PDH再生成 {}",
+        diag.sample_nanos / 1_000,
+        format_bytes(diag.working_set),
+        format_bytes(diag.private_bytes),
+        count_text(diag.handles),
+        count_text(diag.threads),
+        diag.ring_slots,
+        format_bytes(crate::metric::MetricValue::Value(diag.ring_bytes)),
+        format_bytes(diag.etw_buffer_ceiling),
+        detail.ledger_threads,
+        detail.ledger_ended,
+        detail.ledger_names,
+        diag.pdh_reopens,
+    )
+}
+
 fn wire_resource(
     ui: &AppWindow,
     state: &Rc<RefCell<UiState>>,
@@ -745,12 +787,31 @@ fn wire_resource(
 
 fn apply(ui: &AppWindow, state: &Rc<RefCell<UiState>>, sample: &PublishedSample, force: bool) {
     let started = std::time::Instant::now();
-    let (column, descending, resource, rows_model) = {
+    // A minimized window keeps sampling and the pinned snapshot, and skips model updates.
+    // The sequence is left stale so restore paints the newest sample.
+    if ui.window().is_minimized() {
+        return;
+    }
+    let page = ui.get_page();
+    let (column, descending, resource, rows_model, paint_rows, paint_perf) = {
         let mut state = state.borrow_mut();
-        if !force && state.last_sequence == Some(sample.snapshot.sequence) {
-            return;
+        let sequence = sample.snapshot.sequence;
+        if !force && state.last_sequence == Some(sequence) {
+            let rows_ready = page != 0 || state.rows_for == Some(sequence);
+            let perf_ready = page != 1 || state.perf_for == Some(sequence);
+            if rows_ready && perf_ready {
+                return;
+            }
         }
-        state.last_sequence = Some(sample.snapshot.sequence);
+        state.last_sequence = Some(sequence);
+        let paint_rows = page == 0;
+        let paint_perf = page == 1;
+        if paint_rows {
+            state.rows_for = Some(sequence);
+        }
+        if paint_perf {
+            state.perf_for = Some(sequence);
+        }
         state.timeline = sample.timeline.clone();
         if let Some(snapshot) = state.pending_retained.take() {
             state.selection.pin(snapshot);
@@ -768,13 +829,19 @@ fn apply(ui: &AppWindow, state: &Rc<RefCell<UiState>>, sample: &PublishedSample,
             state.sort_desc,
             state.resource,
             Rc::clone(&state.rows),
+            paint_rows,
+            paint_perf,
         )
     };
 
-    let presented = present_rows(&sample.snapshot, column, descending);
-    sync_model(&rows_model, presented.into_iter().map(to_row).collect());
-    paint_graphs(ui, state, resource, &sample.charts);
-    paint_history(ui, state, resource, sample);
+    if paint_rows {
+        let presented = present_rows(&sample.snapshot, column, descending);
+        sync_model(&rows_model, presented.into_iter().map(to_row).collect());
+    }
+    if paint_perf {
+        paint_graphs(ui, state, resource, &sample.charts);
+        paint_history(ui, state, resource, sample);
+    }
 
     let line = status_line(
         &sample.snapshot,
@@ -788,10 +855,12 @@ fn apply(ui: &AppWindow, state: &Rc<RefCell<UiState>>, sample: &PublishedSample,
         Some(warning) => {
             ui.set_warning_text(warning.into());
             ui.set_warning_visible(true);
+            ui.set_warning_quiet(sample.snapshot.warning_quiet);
         }
         None => {
             ui.set_warning_text("".into());
             ui.set_warning_visible(false);
+            ui.set_warning_quiet(false);
         }
     }
 
@@ -800,9 +869,13 @@ fn apply(ui: &AppWindow, state: &Rc<RefCell<UiState>>, sample: &PublishedSample,
     ui.set_cpu_kind(cards.cpu.kind.code());
     ui.set_memory_summary(cards.memory.text.into());
     ui.set_memory_kind(cards.memory.kind.code());
-    ui.set_disk_summary(cards.disk.text.into());
+    let (disk_a, disk_b) = split_pair(&cards.disk.text);
+    ui.set_disk_summary(disk_a);
+    ui.set_disk_summary_b(disk_b);
     ui.set_disk_kind(cards.disk.kind.code());
-    ui.set_network_summary(cards.network.text.into());
+    let (net_a, net_b) = split_pair(&cards.network.text);
+    ui.set_network_summary(net_a);
+    ui.set_network_summary_b(net_b);
     ui.set_network_kind(cards.network.kind.code());
     ui.set_gpu3d_summary(cards.gpu3d.text.into());
     ui.set_gpu3d_kind(cards.gpu3d.kind.code());
@@ -905,6 +978,22 @@ fn paint_history(
     ui.set_detail_extra(detail.extra.into());
     ui.set_detail_note(detail.note.into());
     ui.set_detail_graph(detail.show_graph);
+    let adapter_rows = if resource == ResourceId::Network {
+        adapter_lines(shown.as_ref())
+    } else {
+        Vec::new()
+    };
+    sync_model(
+        &state.borrow().adapters,
+        adapter_rows
+            .into_iter()
+            .map(|line| AdapterLine {
+                name: line.name.into(),
+                recv: line.recv.into(),
+                send: line.send.into(),
+            })
+            .collect(),
+    );
     ui.set_history_cursor(cursor.map(|index| index as i32).unwrap_or(-1));
     ui.set_history_pinned(pinned);
     ui.set_history_when(lines.when.into());
@@ -1194,6 +1283,13 @@ fn to_kind(kind: DisplayKind) -> CellKind {
     }
 }
 
+fn split_pair(text: &str) -> (slint::SharedString, slint::SharedString) {
+    match text.split_once('\n') {
+        Some((first, second)) => (first.into(), second.into()),
+        None => (text.into(), String::new().into()),
+    }
+}
+
 fn sync_model<T: Clone + 'static>(model: &VecModel<T>, mut next: Vec<T>) {
     let target = next.len();
     let shared = model.row_count().min(target);
@@ -1356,6 +1452,13 @@ mod layout_tests {
         assert!(detail_at.x + detail_size.width <= width + 1.0);
         assert!(column_at.y >= -1.0 && column_at.y + column_size.height <= height + 1.0);
         assert!(title.size().width > 16.0 && title.size().height > 8.0);
+        assert!(
+            title.absolute_position().y + 1.0 >= detail_at.y
+                && title.absolute_position().y < detail_at.y + 40.0,
+            "detail title is not at the top: title {} detail {}",
+            title.absolute_position().y,
+            detail_at.y
+        );
         assert!(value.size().width > 16.0 && value.size().height > 8.0);
         assert!(graph.size().width > 60.0 && graph.size().height > 80.0);
         let graph_at = graph.absolute_position();
@@ -1384,6 +1487,28 @@ mod layout_tests {
         backend();
         let ui = AppWindow::new().expect("window");
         assert!(!ui.get_nav_expanded());
+    }
+
+    #[test]
+    fn collapsed_privilege_label_stays_inside_the_window() {
+        backend();
+        let ui = AppWindow::new().expect("window");
+        ui.window().set_size(slint::LogicalSize::new(800.0, 600.0));
+        ui.set_nav_expanded(false);
+        ui.set_privilege_text("管理者として動作".into());
+        ui.set_privilege_short("管理者".into());
+        ui.show().expect("show");
+        let label = ElementHandle::find_by_accessible_label(&ui, "管理者として動作")
+            .next()
+            .expect("privilege");
+        let at = label.absolute_position();
+        let size = label.size();
+        assert!(size.height > 8.0, "privilege label has no height");
+        assert!(
+            at.y + size.height <= 600.0 + 1.0,
+            "privilege label is clipped at {}",
+            at.y + size.height
+        );
     }
 
     #[test]

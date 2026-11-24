@@ -6,8 +6,13 @@ use std::time::Duration;
 
 use crate::metric::MetricValue;
 use crate::model::{ProcessSnapshot, RawProcess, RawSample, Snapshot};
+use crate::names::NameTable;
 
-pub fn aggregate(previous: Option<&RawSample>, current: &RawSample) -> Snapshot {
+pub fn aggregate(
+    previous: Option<&RawSample>,
+    current: &RawSample,
+    names: &mut NameTable,
+) -> Snapshot {
     let elapsed = previous.map(|prev| current.taken_at.saturating_duration_since(prev.taken_at));
     let denom = previous
         .and_then(|prev| elapsed.and_then(|elapsed| cpu_denominator(prev, current, elapsed)));
@@ -29,7 +34,7 @@ pub fn aggregate(previous: Option<&RawSample>, current: &RawSample) -> Snapshot 
         .iter()
         .map(|process| {
             let prev = previous_processes.get(&process.key()).copied();
-            process_snapshot(process, prev, denom, elapsed)
+            process_snapshot(process, prev, denom, elapsed, names)
         })
         .collect();
 
@@ -58,6 +63,7 @@ pub fn aggregate(previous: Option<&RawSample>, current: &RawSample) -> Snapshot 
         gpu_presence: current.gpu_presence,
         processes,
         warning: current.warning.clone(),
+        warning_quiet: current.warning_quiet,
         cpu_detail: current.cpu_detail.clone(),
     }
 }
@@ -67,6 +73,7 @@ fn process_snapshot(
     previous: Option<&RawProcess>,
     denom: Option<u64>,
     elapsed: Option<Duration>,
+    names: &mut NameTable,
 ) -> ProcessSnapshot {
     let cpu_percent = match denom {
         Some(denom) => match counter_delta(
@@ -82,7 +89,7 @@ fn process_snapshot(
     ProcessSnapshot {
         key: process.key(),
         parent_pid: process.parent_pid,
-        name: process.name.clone(),
+        name: names.share(&process.name),
         cpu_percent,
         memory_bytes: process.memory_bytes,
         disk_read_bps: counter_rate(
@@ -230,6 +237,10 @@ mod tests {
     use super::*;
     use std::time::{Instant, SystemTime};
 
+    fn agg(previous: Option<&RawSample>, current: &RawSample) -> Snapshot {
+        aggregate(previous, current, &mut crate::names::NameTable::new())
+    }
+
     fn base(at: Instant, total: u64, busy: u64, cpu: u64, creation: u64) -> RawSample {
         let mut process = RawProcess::new(7, 1, "demo.exe");
         process.creation_time_100ns = Some(creation);
@@ -248,7 +259,7 @@ mod tests {
     #[test]
     fn first_sample_cpu_is_unavailable_but_memory_is_kept() {
         let now = Instant::now();
-        let snapshot = aggregate(None, &base(now, 40_000_000, 10_000_000, 5_000_000, 10));
+        let snapshot = agg(None, &base(now, 40_000_000, 10_000_000, 5_000_000, 10));
         assert_eq!(snapshot.cpu_percent, MetricValue::Unavailable);
         assert_eq!(snapshot.processes[0].cpu_percent, MetricValue::Unavailable);
         assert_eq!(snapshot.memory_used_bytes, MetricValue::Value(750));
@@ -272,7 +283,7 @@ mod tests {
             10_000_000,
             10,
         );
-        let snapshot = aggregate(Some(&prev), &curr);
+        let snapshot = agg(Some(&prev), &curr);
         assert_eq!(snapshot.cpu_percent, MetricValue::Value(25.0));
         assert_eq!(snapshot.processes[0].cpu_percent, MetricValue::Value(12.5));
         assert_eq!(snapshot.interval, Some(Duration::from_millis(500)));
@@ -283,7 +294,7 @@ mod tests {
         let start = Instant::now();
         let prev = base(start, 10, 0, 50, 10);
         let curr = base(start + Duration::from_millis(500), 110, 0, 50, 10);
-        let snapshot = aggregate(Some(&prev), &curr);
+        let snapshot = agg(Some(&prev), &curr);
         assert_eq!(snapshot.cpu_percent, MetricValue::Value(0.0));
         assert_eq!(snapshot.processes[0].cpu_percent, MetricValue::Value(0.0));
     }
@@ -299,7 +310,7 @@ mod tests {
             9_000,
             200,
         );
-        let snapshot = aggregate(Some(&prev), &curr);
+        let snapshot = agg(Some(&prev), &curr);
         assert_eq!(snapshot.processes[0].cpu_percent, MetricValue::Unavailable);
     }
 
@@ -314,7 +325,7 @@ mod tests {
             1_000,
             100,
         );
-        let snapshot = aggregate(Some(&prev), &curr);
+        let snapshot = agg(Some(&prev), &curr);
         assert_eq!(snapshot.processes[0].cpu_percent, MetricValue::Unavailable);
     }
 
@@ -325,7 +336,7 @@ mod tests {
         let mut curr = base(start + Duration::from_millis(500), 20, 0, 0, 1);
         prev.processes[0].disk_read_bytes = MetricValue::Value(1_000);
         curr.processes[0].disk_read_bytes = MetricValue::Value(3_000);
-        let snapshot = aggregate(Some(&prev), &curr);
+        let snapshot = agg(Some(&prev), &curr);
         assert_eq!(
             snapshot.processes[0].disk_read_bps,
             MetricValue::Value(4_000.0)

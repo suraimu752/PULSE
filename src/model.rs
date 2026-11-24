@@ -1,9 +1,73 @@
 //! Shared data types. Collectors fill [`RawSample`]. The aggregator turns two
 //! raw samples into a [`Snapshot`] the UI and the history buffer can store.
 
+use std::sync::Arc;
 use std::time::{Instant, SystemTime};
 
 use crate::metric::MetricValue;
+
+/// A process or image name shared across snapshots.
+///
+/// The text is immutable. Cloning copies the `Arc`, not the bytes, so a
+/// 60-second ring can keep one allocation per distinct name. Identity is still
+/// [`ProcessKey`]; two processes may share a name without sharing a key.
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+pub struct SharedName(Arc<str>);
+
+impl SharedName {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    #[cfg(test)]
+    pub(crate) fn as_arc(&self) -> &Arc<str> {
+        &self.0
+    }
+}
+
+impl From<&str> for SharedName {
+    fn from(name: &str) -> Self {
+        Self(Arc::from(name))
+    }
+}
+
+impl From<String> for SharedName {
+    fn from(name: String) -> Self {
+        Self(Arc::from(name))
+    }
+}
+
+impl AsRef<str> for SharedName {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::ops::Deref for SharedName {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for SharedName {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl PartialEq<&str> for SharedName {
+    fn eq(&self, other: &&str) -> bool {
+        self.0.as_ref() == *other
+    }
+}
+
+impl PartialEq<str> for SharedName {
+    fn eq(&self, other: &str) -> bool {
+        self.0.as_ref() == other
+    }
+}
 
 /// Identity that survives PID reuse.
 ///
@@ -149,6 +213,9 @@ pub struct RawSample {
     pub gpu_presence: GpuPresence,
     pub processes: Vec<RawProcess>,
     pub warning: Option<String>,
+    /// The warning is a protected-process notice. The UI keeps it quiet,
+    /// because elevating again will not open those processes.
+    pub warning_quiet: bool,
     /// Filled by the ETW enricher or the mock. The aggregator copies it through.
     /// It does not feed [`Snapshot::cpu_percent`].
     pub cpu_detail: CpuDetailSnapshot,
@@ -180,6 +247,7 @@ impl RawSample {
             gpu_presence: GpuPresence::Unknown,
             processes: Vec::new(),
             warning: None,
+            warning_quiet: false,
             cpu_detail: CpuDetailSnapshot::off(),
         }
     }
@@ -188,6 +256,7 @@ impl RawSample {
         if text.is_empty() {
             return;
         }
+        self.warning_quiet = false;
         self.warning = Some(match self.warning.take() {
             Some(existing) if existing.contains(text) => existing,
             Some(existing) => format!("{existing}; {text}"),
@@ -201,7 +270,7 @@ impl RawSample {
 pub struct ProcessSnapshot {
     pub key: ProcessKey,
     pub parent_pid: u32,
-    pub name: String,
+    pub name: SharedName,
     pub cpu_percent: MetricValue<f64>,
     pub memory_bytes: MetricValue<u64>,
     pub disk_read_bps: MetricValue<f64>,
@@ -263,6 +332,8 @@ pub struct Snapshot {
     pub gpu_presence: GpuPresence,
     pub processes: Vec<ProcessSnapshot>,
     pub warning: Option<String>,
+    /// See [`RawSample::warning_quiet`].
+    pub warning_quiet: bool,
     /// Per-logical-processor breakdown. Empty and [`CpuDetailState::Off`] unless
     /// detailed analysis is on. This never replaces [`Self::cpu_percent`].
     pub cpu_detail: CpuDetailSnapshot,
@@ -290,15 +361,20 @@ pub struct GpuAdapter {
 
 /// How per-process network bytes should be read.
 ///
-/// Adapter totals can exist while per-process attribution cannot. `NeedsAdmin`
-/// means the process cells are not a measured zero; the UI says so.
+/// Adapter totals can exist while per-process attribution cannot.
+///
+/// `Unimplemented` is not an elevation problem. Do not report it as
+/// `NeedsAdmin`. `NeedsAdmin` is only for a collector that exists and was
+/// refused for lack of rights.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum ProcessNetMode {
     /// Per-process counters are meaningful (including Unavailable for one process).
     #[default]
     Attributed,
-    /// This build does not attribute flows to a PID without elevation.
+    /// A real per-process collector ran and was refused for lack of rights.
     NeedsAdmin,
+    /// Per-process network is not implemented in this build.
+    Unimplemented,
 }
 
 /// Whether a GPU collector found any adapter.
@@ -366,7 +442,7 @@ impl ProcessSnapshot {
                 creation_time_100ns: creation,
             },
             parent_pid: 0,
-            name: name.to_string(),
+            name: SharedName::from(name),
             cpu_percent: MetricValue::Unsupported,
             memory_bytes: MetricValue::Unsupported,
             disk_read_bps: MetricValue::Unsupported,
@@ -411,6 +487,7 @@ impl Snapshot {
             gpu_presence: GpuPresence::Unknown,
             processes: Vec::new(),
             warning: None,
+            warning_quiet: false,
             cpu_detail: CpuDetailSnapshot::off(),
         }
     }
@@ -458,7 +535,7 @@ pub enum CpuDetailState {
 #[derive(Clone, Debug, PartialEq)]
 pub struct LogicalCpuProcess {
     pub key: ProcessKey,
-    pub name: String,
+    pub name: SharedName,
     pub cpu_time_100ns: u64,
     pub percent: f64,
 }
@@ -483,6 +560,12 @@ pub struct CpuDetailSnapshot {
     /// Mean of ready per-CPU busy percents. Compared with GetSystemTimes, not mixed into it.
     pub mean_busy_percent: Option<f64>,
     pub processors: Vec<LogicalCpuSample>,
+    /// Threads still in the ETW ledger after this interval was folded.
+    pub ledger_threads: u32,
+    /// Ended thread ids still remembered so a late switch is not guessed.
+    pub ledger_ended: u32,
+    /// Process names still held by the ledger, not the history ring.
+    pub ledger_names: u32,
 }
 
 impl CpuDetailSnapshot {
@@ -495,6 +578,9 @@ impl CpuDetailSnapshot {
             aggregate_nanos: 0,
             mean_busy_percent: None,
             processors: Vec::new(),
+            ledger_threads: 0,
+            ledger_ended: 0,
+            ledger_names: 0,
         }
     }
 
@@ -507,6 +593,9 @@ impl CpuDetailSnapshot {
             aggregate_nanos: 0,
             mean_busy_percent: None,
             processors: Vec::new(),
+            ledger_threads: 0,
+            ledger_ended: 0,
+            ledger_names: 0,
         }
     }
 
@@ -519,6 +608,9 @@ impl CpuDetailSnapshot {
             aggregate_nanos: 0,
             mean_busy_percent: None,
             processors: Vec::new(),
+            ledger_threads: 0,
+            ledger_ended: 0,
+            ledger_names: 0,
         }
     }
 }
