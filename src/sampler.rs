@@ -570,9 +570,20 @@ mod tests {
         assert_eq!(core.names.len(), 1);
         assert_eq!(published.diag.ring_slots, 120);
         assert!(published.diag.ring_bytes > 0);
-        assert_eq!(published.diag.handles, MetricValue::Unavailable);
-        assert_eq!(published.diag.private_bytes, MetricValue::Unavailable);
         assert_eq!(published.diag.etw_buffer_ceiling, MetricValue::Unavailable);
-        assert_ne!(published.diag.handles, MetricValue::Value(0));
+        // A real handle count is not zero. Platforms that cannot read it stay unavailable.
+        #[cfg(windows)]
+        {
+            assert!(matches!(published.diag.handles, MetricValue::Value(count) if count > 0));
+            assert!(matches!(
+                published.diag.private_bytes,
+                MetricValue::Value(_)
+            ));
+        }
+        #[cfg(not(windows))]
+        {
+            assert_eq!(published.diag.handles, MetricValue::Unavailable);
+            assert_eq!(published.diag.private_bytes, MetricValue::Unavailable);
+        }
     }
 }
